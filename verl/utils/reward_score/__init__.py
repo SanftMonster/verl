@@ -42,18 +42,12 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
         res = prime_code.compute_score(solution_str, ground_truth, continuous=True)
     elif data_source in ['hotpotqa', 'hotpotQA']:
         from . import hotpotqa
-        res = hotpotqa.compute_score(
-            solution_str=solution_str,
-            ground_truth=ground_truth,
-            question=question,
-            # extractor_urls=["http://172.18.75.153:8000/v1"],
-            # checker_urls=["http://172.18.75.109:8000/v1"],
-            # extractor_urls=["http://172.20.68.119:8000/v1"],
-            # checker_urls=["http://172.20.69.226:8000/v1"],
-            extractor_urls=["http://172.21.1.152:8000/v1"],
-            checker_urls=["http://172.21.1.97:8000/v1"],
-            tokenizer=tokenizer
-        )
+        res = hotpotqa.compute_score(solution_str=solution_str,
+                                     ground_truth=ground_truth,
+                                     question=question,
+                                     extractor_urls=["http://172.21.1.152:8000/v1"],
+                                     checker_urls=["http://172.21.1.97:8000/v1"],
+                                     tokenizer=tokenizer)
         # lurui: must return a float
         print(f"judgement by hotpotqa: {res}")
         if isinstance(res, float):

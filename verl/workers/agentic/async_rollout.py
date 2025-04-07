@@ -28,6 +28,7 @@ def _pre_process_inputs(pad_token_id, token_ids: torch.Tensor) -> list[int]:
 
 
 class AsyncRollout(BaseRollout):
+
     def __init__(self, model_path, config: DictConfig, device_mesh: DeviceMesh):
         super().__init__()
         torch.distributed.barrier()
@@ -37,9 +38,7 @@ class AsyncRollout(BaseRollout):
         self.tp_rank = device_mesh.get_local_rank(1)
         cuda_visible_device = os.environ["CUDA_VISIBLE_DEVICES"]
         visible_devices: list[str | None] = [None] * device_mesh.size(1)
-        torch.distributed.all_gather_object(
-            visible_devices, cuda_visible_device, group=device_mesh.get_group(1)
-        )
+        torch.distributed.all_gather_object(visible_devices, cuda_visible_device, group=device_mesh.get_group(1))
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(visible_devices)
         print(
             f"nodedup in async rollout {os.environ['CUDA_VISIBLE_DEVICES']=} @ {torch.distributed.get_rank()=} {self.tp_rank=}"
@@ -61,9 +60,7 @@ class AsyncRollout(BaseRollout):
                 tp_size=device_mesh.size(1),
                 # enable_metrics=True,
             )
-            print(
-                f"nodedup {torch.distributed.get_rank() = } releasing memory occupation"
-            )
+            print(f"nodedup {torch.distributed.get_rank() = } releasing memory occupation")
             self.engine.release_memory_occupation()
             print(f"nodedup {torch.distributed.get_rank() = } engine initialized")
         else:
@@ -74,17 +71,13 @@ class AsyncRollout(BaseRollout):
         self.config = config
         self.task_type = config.task_type
         self.sampling_params = dict(config.sampling_params)
-        self.sampling_params.update(
-            {
-                "skip_special_tokens": False,
-            }
-        )
+        self.sampling_params.update({
+            "skip_special_tokens": False,
+        })
         self.event_loop = asyncio.get_event_loop()
 
     def generate_sequences(self, prompts: DataProto, **kwargs) -> DataProto | None:
-        print(
-            f"nodedup in generate seq {torch.distributed.get_rank()=} {self.tp_rank=} {prompts.non_tensor_batch=}"
-        )
+        print(f"nodedup in generate seq {torch.distributed.get_rank()=} {self.tp_rank=} {prompts.non_tensor_batch=}")
         if self.tp_rank != 0:
             return None
 
@@ -96,12 +89,8 @@ class AsyncRollout(BaseRollout):
             self.gsm8k_metadata = {}
 
         async def gen_id(input_ids):
-            assert isinstance(input_ids, list) and isinstance(
-                input_ids[0], int
-            ), f"not list int: {input_ids=}"
-            res = await self.engine.async_generate(
-                input_ids=input_ids, sampling_params=sampling_params
-            )
+            assert isinstance(input_ids, list) and isinstance(input_ids[0], int), f"not list int: {input_ids=}"
+            res = await self.engine.async_generate(input_ids=input_ids, sampling_params=sampling_params)
             if torch.distributed.get_rank() == 0:
                 print(f"nodedup {torch.distributed.get_rank()=} generated: {res=}")
             text = res["text"]
@@ -124,9 +113,7 @@ class AsyncRollout(BaseRollout):
                 add_generation_prompt=True,
             )
             try:
-                ret = await self.engine.async_generate(
-                    input_ids=ids, sampling_params=sampling_params
-                )
+                ret = await self.engine.async_generate(input_ids=ids, sampling_params=sampling_params)
             except ValueError as e:
                 print(f"Error generating chat: {e}")
                 raise
@@ -146,16 +133,13 @@ class AsyncRollout(BaseRollout):
                     normal_text = ret["text"]
                     info_list = []
                 message["content"] = normal_text
-                message["tool_calls"] = [
-                    {
-                        "id": str(info.tool_index),
-                        "function": {
-                            "name": info.name,
-                            "arguments": info.parameters,
-                        },
-                    }
-                    for info in info_list
-                ]
+                message["tool_calls"] = [{
+                    "id": str(info.tool_index),
+                    "function": {
+                        "name": info.name,
+                        "arguments": info.parameters,
+                    },
+                } for info in info_list]
             else:
                 message["content"] = ret["text"]
 
@@ -173,9 +157,7 @@ class AsyncRollout(BaseRollout):
                 result = await initialize_runtime(instance_id.item())
                 print(result)
                 return {
-                    "prompt_ids": _pre_process_inputs(
-                        tokenizer.pad_token_id, input_ids
-                    ),
+                    "prompt_ids": _pre_process_inputs(tokenizer.pad_token_id, input_ids),
                     "sid": result["sid"],
                     "sids": int(
                         result["sid"]
@@ -203,11 +185,7 @@ class AsyncRollout(BaseRollout):
                     "data_source": data_source,
                     "reward_model": reward_model,
                     "extra_info": extra_info,
-                    "input_ids": (
-                        input_ids.cpu().tolist()
-                        if isinstance(input_ids, torch.Tensor)
-                        else input_ids
-                    ),
+                    "input_ids": (input_ids.cpu().tolist() if isinstance(input_ids, torch.Tensor) else input_ids),
                 }
 
             return {
@@ -234,12 +212,18 @@ class AsyncRollout(BaseRollout):
                     "observations_times": 0,
                     "failed_times": 0
                 }
-            
+
             return {
-                "done": False,
-                "ids": [], # TODO: provide feedback
-                "observations_times": 1,
-                "failed_times": 0
+                "done":
+                    False,
+                "ids":
+                    tokenizer.encode(
+                        "No result found. Result is one single number and should be directly concatenated after '#### '. Response should be concise."
+                    ),  # TODO: provide feedback
+                "observations_times":
+                    1,
+                "failed_times":
+                    0
             }
 
         async def gsm8k_end(sid, done):
@@ -249,8 +233,8 @@ class AsyncRollout(BaseRollout):
             sequences = self.gsm8k_storage_sid2seq.get(sid, [])
             sequences_str = tokenizer.decode(sequences)
 
-            # print(f"\n[Stage 4] Complete Generation for sample {sid}:")
-            # print(f"Full response: {sequences_str}")
+            print(f"\n[Stage 4] Complete Generation for sample {sid}:")
+            print(f"Full response: {sequences_str}")
 
             data_source = metadata.get("data_source", "openai/gsm8k")
             reward_model = metadata.get("reward_model", {})
@@ -322,8 +306,7 @@ class AsyncRollout(BaseRollout):
                 # fix by lurui: consider some special token
                 max_length=self.total_len - 50,
                 tokenizer=tokenizer,
-            )
-            for item in repeated
+            ) for item in repeated
         ]
         results = self.event_loop.run_until_complete(asyncio.gather(*tasks))
 
@@ -335,26 +318,18 @@ class AsyncRollout(BaseRollout):
             self.config.prompt_length,
             self.config.response_length,
         )
-        prompts_ids = torch.full(
-            (batch_size, prompt_len), pad, dtype=torch.long, device=device
-        )
-        responses = torch.full(
-            (batch_size, response_len), pad, dtype=torch.long, device=device
-        )
+        prompts_ids = torch.full((batch_size, prompt_len), pad, dtype=torch.long, device=device)
+        responses = torch.full((batch_size, response_len), pad, dtype=torch.long, device=device)
         loss_mask = torch.zeros((batch_size, max_len), dtype=torch.int, device=device)
         if "reward" in results[0]:
             rewards = torch.zeros((batch_size,), dtype=torch.float, device=device)
         obs_metrics = {}
 
         for i, r in enumerate(results):
-            prompts_ids[i, -len(r["prompts"]) :] = torch.tensor(
-                r["prompts"], device=device
-            )
+            prompts_ids[i, -len(r["prompts"]):] = torch.tensor(r["prompts"], device=device)
             length = min(len(r["responses"]), response_len)
             responses[i, :length] = torch.tensor(r["responses"][:length], device=device)
-            loss_mask[i, prompt_len : prompt_len + length] = torch.tensor(
-                r["response_loss_mask"][:length], device=device
-            )
+            loss_mask[i, prompt_len:prompt_len + length] = torch.tensor(r["response_loss_mask"][:length], device=device)
             if "reward" in r:
                 rewards[i] = r["reward"]
 
@@ -373,13 +348,9 @@ class AsyncRollout(BaseRollout):
             )
 
         print(f"{obs_metrics=}")
-        obs_metrics = {
-            k: torch.tensor(v, device=device) for k, v in obs_metrics.items()
-        }
+        obs_metrics = {k: torch.tensor(v, device=device) for k, v in obs_metrics.items()}
 
-        print(
-            f"{tokenizer.decode(torch.where(prompts_ids[0] != pad, prompts_ids[0], 0))=}"
-        )
+        print(f"{tokenizer.decode(torch.where(prompts_ids[0] != pad, prompts_ids[0], 0))=}")
         print(f"{tokenizer.decode(torch.where(responses[0] != pad, responses[0], 0))=}")
         print(f"{tokenizer.decode(torch.where(all_ids[0] != pad, all_ids[0], 0))=}")
         print(f"{tokenizer.decode(torch.where(loss_mask[0] == 1, all_ids[0], 0))=}")
@@ -394,7 +365,9 @@ class AsyncRollout(BaseRollout):
                 "attention_mask": attn_mask,
                 "position_ids": position_ids,
                 **obs_metrics,
-                **({"rm_final_scores": rewards} if "reward" in results[0] else {}),
+                **({
+                    "rm_final_scores": rewards
+                } if "reward" in results[0] else {}),
             },
             batch_size=batch_size,
         )

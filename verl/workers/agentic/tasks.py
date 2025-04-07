@@ -19,8 +19,8 @@ async def openai_chat_start(index, name, url):
         index = index.item()
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         async with session.post(url + "/start_sample", json={
-            "index": index,
-            "name": name,
+                "index": index,
+                "name": name,
         }) as response:
             ret = await response.json()
     ret["sid"] = response.headers["session_id"]

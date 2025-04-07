@@ -8,15 +8,18 @@ from tensordict import TensorDict
 
 OBS_ERROR_MSG = "obs too long"
 
+
 def clear_suffix(text):
     text = text.replace('<|im_end|>\n<|im_start|>user\n', '')
     text = text.replace('<|im_end|>\n<|im_start|>assistant\n', '')
     text = text.rstrip()
     return text
 
+
 def is_stop(response):
     is_finish = "<function=finish>" in response
     return is_finish
+
 
 async def initialize_runtime(instance_id):
     url = get_api(type="start")
@@ -29,7 +32,8 @@ async def initialize_runtime(instance_id):
     except Exception as e:
         print(f"Initializing - API call failed: {e}")
         return None
-    
+
+
 async def call_observation_api(sid, text: str):
     if isinstance(sid, torch.Tensor):
         sid = sid.item()
@@ -44,7 +48,8 @@ async def call_observation_api(sid, text: str):
                 return await response.json()
     except Exception as e:
         print(f"Observation - API call failed: {e}")
-        return None    
+        return None
+
 
 async def call_postprocess_api(sid: str):
     url = get_api(type="postprocess")
@@ -59,6 +64,7 @@ async def call_postprocess_api(sid: str):
         print(f"Postprocess - API call failed: {e}")
         return None
 
+
 def calc_reward(reward_json):
     # patch_is_None
     # patch_exists
@@ -68,7 +74,7 @@ def calc_reward(reward_json):
     # f2p_total
     # p2p_count
     # p2p_total
-    
+
     if 'reward' in reward_json:
         return reward_json['reward']
     else:
@@ -76,7 +82,8 @@ def calc_reward(reward_json):
             return reward_json['f2p_count'] / reward_json['f2p_total']
         except:
             return 0.0
-    
+
+
 def get_generation_tokens(role, model="qwen"):
     assert role in ["user", "assistant"], f"role {role} not supported"
     if model == "qwen":
@@ -86,7 +93,8 @@ def get_generation_tokens(role, model="qwen"):
             return [151645, 198, 151644, 77091, 198]
     else:
         raise NotImplementedError
-    
+
+
 def expand_tensor_dict(td, repeats: int):
     # Access the TensorDict inside DataProto's 'batch' attribute
     assert repeats >= 1
@@ -95,12 +103,10 @@ def expand_tensor_dict(td, repeats: int):
         for _ in range(repeats - 1):
             duplicated_values.append(td[key])
     return duplicated_values
-  
+
+
 def get_api(type):
-    base_url = random.sample([
-        "http://60.165.239.98:5000",
-        "http://60.165.239.99:5000"
-    ], 1)[0]
+    base_url = random.sample(["http://60.165.239.98:5000", "http://60.165.239.99:5000"], 1)[0]
     # TODO: only support shouyun1 now
     base_url = "http://60.165.239.98:5000"
     assert type in ["reward", "action", "start", "postprocess"]
@@ -113,6 +119,7 @@ def get_api(type):
     elif type == "postprocess":
         return f"{base_url}/postprocess"
 
+
 def remove_trailing_pad_tokens(tensor, pad_token_id):
     tensor = tensor.flip(dims=[0])
     non_pad_indices = (tensor != pad_token_id).nonzero(as_tuple=True)[0]
@@ -122,13 +129,16 @@ def remove_trailing_pad_tokens(tensor, pad_token_id):
     tensor = tensor.flip(dims=[0])
     return tensor
 
+
 def get_system_prompt():
     return "You are OpenHands agent, a helpful AI assistant that can interact with a computer to solve tasks.\n<IMPORTANT>\n* If user provides a path, you should NOT assume it's relative to the current working directory. Instead, you should explore the file system to find the file before working on it.\n* When configuring git credentials, use \"openhands\" as the user.name and \"openhands@all-hands.dev\" as the user.email by default, unless explicitly instructed otherwise.\n* The assistant MUST NOT include comments in the code unless they are necessary to describe non-obvious behavior.\n</IMPORTANT>\nYou have access to the following functions:\n\n---- BEGIN FUNCTION #1: execute_bash ----\nDescription: Execute a bash command in the terminal.\n* Long running commands: For commands that may run indefinitely, it should be run in the background and the output should be redirected to a file, e.g. command = `python3 app.py > server.log 2>&1 &`.\n* Interactive: If a bash command returns exit code `-1`, this means the process is not yet finished. The assistant must then send a second call to terminal with an empty `command` (which will retrieve any additional logs), or it can send additional text (set `command` to the text) to STDIN of the running process, or it can send command=`ctrl+c` to interrupt the process.\n* Timeout: If a command execution result says \"Command timed out. Sending SIGINT to the process\", the assistant should retry running the command in the background.\n\nParameters:\n  (1) command (string, required): The bash command to execute. Can be empty to view additional logs when previous exit code is `-1`. Can be `ctrl+c` to interrupt the currently running process.\n---- END FUNCTION #1 ----\n\n---- BEGIN FUNCTION #2: finish ----\nDescription: Finish the interaction when the task is complete OR if the assistant cannot proceed further with the task.\nNo parameters are required for this function.\n---- END FUNCTION #2 ----\n\n---- BEGIN FUNCTION #3: str_replace_editor ----\nDescription: Custom editing tool for viewing, creating and editing files\n* State is persistent across command calls and discussions with the user\n* If `path` is a file, `view` displays the result of applying `cat -n`. If `path` is a directory, `view` lists non-hidden files and directories up to 2 levels deep\n* The `create` command cannot be used if the specified `path` already exists as a file\n* If a `command` generates a long output, it will be truncated and marked with `<response clipped>`\n* The `undo_edit` command will revert the last edit made to the file at `path`\n\nNotes for using the `str_replace` command:\n* The `old_str` parameter should match EXACTLY one or more consecutive lines from the original file. Be mindful of whitespaces!\n* If the `old_str` parameter is not unique in the file, the replacement will not be performed. Make sure to include enough context in `old_str` to make it unique\n* The `new_str` parameter should contain the edited lines that should replace the `old_str`\n\nParameters:\n  (1) command (string, required): The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`, `undo_edit`.\nAllowed values: [`view`, `create`, `str_replace`, `insert`, `undo_edit`]\n  (2) path (string, required): Absolute path to file or directory, e.g. `/workspace/file.py` or `/workspace`.\n  (3) file_text (string, optional): Required parameter of `create` command, with the content of the file to be created.\n  (4) old_str (string, optional): Required parameter of `str_replace` command containing the string in `path` to replace.\n  (5) new_str (string, optional): Optional parameter of `str_replace` command containing the new string (if not given, no string will be added). Required parameter of `insert` command containing the string to insert.\n  (6) insert_line (integer, optional): Required parameter of `insert` command. The `new_str` will be inserted AFTER the line `insert_line` of `path`.\n  (7) view_range (array, optional): Optional parameter of `view` command when `path` points to a file. If none is given, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file.\n---- END FUNCTION #3 ----\n\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<function=example_function_name>\n<parameter=example_parameter_1>value_1</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format, start with <function= and end with </function>\n- Required parameters MUST be specified\n- Only call one function at a time\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after.\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n"
+
 
 def _get_swebench_workspace_dir_name(instance: dict) -> str:
     if isinstance(instance["version"], int):
         instance["version"] = f'{instance["version"]}.0'
     return f'{instance["repo"]}__{instance["version"]}'.replace('/', '__')
+
 
 IN_CONTEXT_LEARNING_EXAMPLE_PREFIX = """
 Here's a running example of how to perform a task with the provided tools.
@@ -309,6 +319,7 @@ IN_CONTEXT_LEARNING_EXAMPLE_SUFFIX = """
 PLEASE follow the format strictly! PLEASE EMIT ONE AND ONLY ONE FUNCTION CALL PER MESSAGE.
 """.lstrip()
 
+
 def get_instruction(instance: dict):
     workspace_dir_name = _get_swebench_workspace_dir_name(instance)
     instruction = (
@@ -328,14 +339,10 @@ def get_instruction(instance: dict):
         '3. Edit the sourcecode of the repo to resolve the issue\n'
         '4. Rerun your reproduce script and confirm that the error is fixed!\n'
         '5. Think about edgecases and make sure your fix handles them as well\n'
-        "Your thinking should be thorough and so it's fine if it's very long.\n"
-    )
-    content = (
-        IN_CONTEXT_LEARNING_EXAMPLE_PREFIX
-        + instruction
-        + IN_CONTEXT_LEARNING_EXAMPLE_SUFFIX
-    )    
+        "Your thinking should be thorough and so it's fine if it's very long.\n")
+    content = (IN_CONTEXT_LEARNING_EXAMPLE_PREFIX + instruction + IN_CONTEXT_LEARNING_EXAMPLE_SUFFIX)
     return content
+
 
 def split_array(array, split_size, dim=0):
     """
@@ -352,10 +359,10 @@ def split_array(array, split_size, dim=0):
     # Ensure dim is 0, as we only handle splitting on batch dimension
     if dim != 0:
         raise ValueError("Only splitting on batch dimension (dim=0) is supported")
-    
+
     batch_size = len(array)
     split_sizes = []
-    
+
     # Calculate split points
     if isinstance(split_size, int):
         idx0 = 0
@@ -366,7 +373,7 @@ def split_array(array, split_size, dim=0):
     elif isinstance(split_size, (list, tuple)):
         if len(split_size) == 0:
             raise RuntimeError("Insufficient number of elements in split_size.")
-        
+
         idx0 = 0
         for size in split_size:
             if not isinstance(size, int):
@@ -376,18 +383,21 @@ def split_array(array, split_size, dim=0):
                 idx1 = batch_size
             split_sizes.append((idx0, idx1))
             idx0 = idx1
-        
+
         if idx0 < batch_size:
-            raise RuntimeError(f"Split method expects split_size to sum exactly to {batch_size} (batch size), but got split_size={split_size}")
+            raise RuntimeError(
+                f"Split method expects split_size to sum exactly to {batch_size} (batch size), but got split_size={split_size}"
+            )
     else:
         raise TypeError("split(): argument 'split_size' must be int or list of ints")
-    
+
     # Split the array based on calculated split points
     result = []
     for start, end in split_sizes:
         result.append(array[start:end])
-    
+
     return result
+
 
 def string_to_hash_tensor(s: str) -> torch.Tensor:
     hash_object = hashlib.md5(s.encode())
@@ -395,10 +405,14 @@ def string_to_hash_tensor(s: str) -> torch.Tensor:
     hash_int = hash_int % (2**63)
     return torch.tensor(hash_int, dtype=torch.int64)
 
+
 def clear_swe_non_batch(data, is_dict=False):
-    keys = ['repo', 'base_commit', 'patch', 'test_patch', 'problem_statement', 'hints_text', 'created_at', 'version', 'FAIL_TO_PASS', 'PASS_TO_PASS', 'environment_setup_commit', 'description']
-    keys.append("__index_level_0__") # pandas specific
-    keys.append("index") # verl specific
+    keys = [
+        'repo', 'base_commit', 'patch', 'test_patch', 'problem_statement', 'hints_text', 'created_at', 'version',
+        'FAIL_TO_PASS', 'PASS_TO_PASS', 'environment_setup_commit', 'description'
+    ]
+    keys.append("__index_level_0__")  # pandas specific
+    keys.append("index")  # verl specific
     for key in keys:
         if not is_dict:
             if key in data.non_tensor_batch.keys():

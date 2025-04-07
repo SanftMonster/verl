@@ -17,16 +17,8 @@ def collect_metrics(src, tgt):
             tgt[k] += v
 
 
-async def ids_agent_loop(
-    start_args: dict,
-    start_fn: StarFnType,
-    gen_fn: GenFnType,
-    obs_fn: ObsFnType,
-    end_fn: EndFnType,
-    max_turns: int,
-    max_length: int,
-    **_
-) -> dict:
+async def ids_agent_loop(start_args: dict, start_fn: StarFnType, gen_fn: GenFnType, obs_fn: ObsFnType,
+                         end_fn: EndFnType, max_turns: int, max_length: int, **_) -> dict:
     done = False
     obs_metrics = {}
     start = await start_fn(**start_args)
@@ -54,23 +46,15 @@ async def ids_agent_loop(
     collect_metrics(await end_fn(sid, done) or {}, obs_metrics)
     return {
         "prompts": prompt_ids,
-        "responses": all_ids[len(prompt_ids): max_length],
+        "responses": all_ids[len(prompt_ids):max_length],
         "response_loss_mask": response_loss_mask,
         "obs_metrics": obs_metrics,
     }
 
 
-async def openai_chat_agent_loop(
-    start_args: dict,
-    start_fn: StarFnType,
-    gen_fn: GenFnType,
-    obs_fn: ObsFnType,
-    end_fn: EndFnType,
-    max_turns: int,
-    max_length: int,
-    tokenizer: PreTrainedTokenizerBase,
-    **_
-) -> dict:
+async def openai_chat_agent_loop(start_args: dict, start_fn: StarFnType, gen_fn: GenFnType, obs_fn: ObsFnType,
+                                 end_fn: EndFnType, max_turns: int, max_length: int, tokenizer: PreTrainedTokenizerBase,
+                                 **_) -> dict:
     done = False
     reward = 0
     obs_metrics = {}
@@ -124,7 +108,7 @@ async def openai_chat_agent_loop(
 
     return {
         "prompts": prompt_ids,
-        "responses": ids[len(prompt_ids): max_length + len(prompt_ids)],
+        "responses": ids[len(prompt_ids):max_length + len(prompt_ids)],
         "response_loss_mask": response_loss_mask[:max_length],
         "reward": reward,
         "obs_metrics": obs_metrics,

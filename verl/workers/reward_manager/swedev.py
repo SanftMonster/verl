@@ -7,6 +7,7 @@ from typing import List, Tuple
 from verl.utils.swedev_utils import *
 from verl import DataProto
 
+
 class SWEDevRewardManager:
     """
     Modified Reward Manager that uses API calls to compute rewards for multi-turn conversations
@@ -20,7 +21,8 @@ class SWEDevRewardManager:
         """Fetch reward from API for a single instance"""
         try:
             payload = {"sid": sid.item()}
-            async with session.post(get_api(type="reward"), json=payload, timeout=aiohttp.ClientTimeout(total=300)) as response:
+            async with session.post(get_api(type="reward"), json=payload,
+                                    timeout=aiohttp.ClientTimeout(total=300)) as response:
                 if response.status == 200:
                     result = await response.json()
                     return float(calc_reward(result))
@@ -43,9 +45,9 @@ class SWEDevRewardManager:
 
         for idx, score in enumerate(scores):
             reward_tensor[idx, response_length[idx] - 1] = score
-            
+
         return reward_tensor
-    
+
     def __call__(self, data: DataProto) -> torch.Tensor:
         """
         Compute rewards for multi-turn conversations using API calls

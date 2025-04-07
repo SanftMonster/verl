@@ -192,9 +192,11 @@ def broadcast_dict_tensor(tensors: Union[Dict[str, torch.Tensor], TensorDict], s
     for key in tensors.sorted_keys:
         torch.distributed.broadcast(tensors[key], src=src, group=group, async_op=False)
 
+
 # def broadcast_dict_non_tensor(data: Dict[str, List], src, group):
 #     for key in data.keys():
 #         torch.distributed.broadcast_object_list(data[key], src=src, group=group)
+
 
 def broadcast_dict_non_tensor(data: Dict[str, List], src, group):
     for key in data.keys():
@@ -234,6 +236,7 @@ def allgather_dict_tensors(tensors: Union[Dict[str, torch.Tensor], TensorDict], 
 
     return output
 
+
 def all_gather_dict_non_tensors(data: Dict[str, List], size, group):
     output = {}
     sorted_keys = sorted(data.keys())
@@ -247,6 +250,7 @@ def all_gather_dict_non_tensors(data: Dict[str, List], size, group):
     print(f"nodedup all gathering {torch.distributed.get_rank()=} {output=}")
     return output
 
+
 # def all_gather_dict_non_tensors(data: Dict[str, List], size, group):
 #     output = {}
 #     sorted_keys = sorted(data.keys())
@@ -256,6 +260,7 @@ def all_gather_dict_non_tensors(data: Dict[str, List], size, group):
 #         torch.distributed.all_gather_object(output[key], val, group=group)
 #         output[key] = np.concatenate(output[key], axis=0)
 #     return output
+
 
 def split_dict_tensor_into_batches(tensors: TensorDict, batch_size) -> List[TensorDict]:
     assert tensors.batch_size[0] % batch_size == 0, \

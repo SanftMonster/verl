@@ -76,6 +76,7 @@ def process_image(image: dict, max_pixels: int = 2048 * 2048, min_pixels: int = 
 # TODO: maybe put base url here is more reasonable
 # TODO: maybe an unified protocol that supports automatically retrieving name and valid indices is better
 class AgenticDataset(Dataset):
+
     def __init__(
         self,
         name: str,
@@ -94,6 +95,7 @@ class AgenticDataset(Dataset):
             "index": torch.tensor(item + self.index_start),
             "name": self.name,
         }
+
 
 class RLHFDataset(Dataset):
     """
@@ -114,7 +116,7 @@ class RLHFDataset(Dataset):
                  truncation: str = 'error',
                  filter_overlong_prompts: bool = False,
                  num_workers: Optional[int] = None,
-                 task_type: str ='default'):
+                 task_type: str = 'default'):
         if not isinstance(parquet_files, (List, ListConfig)):
             parquet_files = [parquet_files]
 
@@ -137,7 +139,7 @@ class RLHFDataset(Dataset):
             self.num_workers = max(1, os.cpu_count() // 4)
         else:
             self.num_workers = min(num_workers, os.cpu_count())
-            
+
         self.task_type = task_type
         if self.task_type != 'default':
             self.preprocess_dataset = PREPROCESS_DATASET[self.task_type]
@@ -193,7 +195,7 @@ class RLHFDataset(Dataset):
         """
         Note that we also return the raw_input_ids so that it can be combined with other chat template
         """
-        row_dict: dict = self.dataframe.iloc[item].to_dict()
+        row_dict: dict = self.dataframe[item]
         if self.task_type == 'default':
             chat = row_dict.pop(self.prompt_key)
         else:

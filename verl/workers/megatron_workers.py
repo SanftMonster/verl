@@ -150,9 +150,13 @@ class ActorRolloutRefWorker(MegatronWorker):
         self.tokenizer = hf_tokenizer(local_path)
 
         # Step 2: get the actor_model_config
-        actor_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=self.config.model.get('trust_remote_code', False))
+        actor_model_config = AutoConfig.from_pretrained(local_path,
+                                                        trust_remote_code=self.config.model.get(
+                                                            'trust_remote_code', False))
 
-        self.generation_config = get_generation_config(local_path, trust_remote_code=self.config.model.get('trust_remote_code', False))
+        self.generation_config = get_generation_config(local_path,
+                                                       trust_remote_code=self.config.model.get(
+                                                           'trust_remote_code', False))
 
         override_config_kwargs = {
             'bos_token_id': self.tokenizer.bos_token_id,
@@ -529,7 +533,9 @@ class CriticWorker(MegatronWorker):
         self.tokenizer = hf_tokenizer(local_path)
 
         # Step 2: get the actor_model_config
-        critic_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=self.config.model.get('trust_remote_code', False))
+        critic_model_config = AutoConfig.from_pretrained(local_path,
+                                                         trust_remote_code=self.config.model.get(
+                                                             'trust_remote_code', False))
 
         override_config_kwargs = {
             'bos_token_id': self.tokenizer.bos_token_id,
@@ -718,7 +724,9 @@ class RewardModelWorker(MegatronWorker):
         self.tokenizer = hf_tokenizer(local_path)
 
         # Step 2: get the actor_model_config
-        rm_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=self.config.model.get('trust_remote_code', False))
+        rm_model_config = AutoConfig.from_pretrained(local_path,
+                                                     trust_remote_code=self.config.model.get(
+                                                         'trust_remote_code', False))
 
         override_config_kwargs = {
             'bos_token_id': self.tokenizer.bos_token_id,

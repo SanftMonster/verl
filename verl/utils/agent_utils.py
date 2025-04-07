@@ -19,7 +19,10 @@ def preprocess_gsm8k_dataset(dataframe, tokenizer=None, max_prompt_length=1024):
 
     if "reward_model" not in dataframe.columns:
         dataframe["reward_model"] = dataframe.apply(
-            lambda row: {"ground_truth": str(row.get("answer", "")), "style": "rule"},
+            lambda row: {
+                "ground_truth": str(row.get("answer", "")),
+                "style": "rule"
+            },
             axis=1,
         )
     if "index" not in dataframe.columns:
@@ -31,9 +34,7 @@ def preprocess_gsm8k_dataset(dataframe, tokenizer=None, max_prompt_length=1024):
         def check_length(doc):
             try:
                 messages = generate_gsm8k_prompt(doc)
-                encoded = tokenizer.apply_chat_template(
-                    messages, add_generation_prompt=True
-                )
+                encoded = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
                 length = len(encoded)
                 return length <= max_prompt_length
             except Exception as e:
@@ -56,20 +57,26 @@ def generate_gsm8k_prompt(row):
     question = row["prompt"]
     messages = [
         {
-            "role": "system",
-            "content": "You are a helpful and accurate math tutor who solves grade school-level math word problems step by step. Provide clear reasoning, and only use '####' in the final answer, in the format '#### <answer>'.",
+            "role":
+                "system",
+            "content":
+                "You are a helpful and accurate math tutor who solves grade school-level math word problems step by step. Provide clear reasoning, and only use '####' in the final answer, in the format '#### <answer>'.",
         },
         {
-            "role": "user",
-            "content": "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?",
+            "role":
+                "user",
+            "content":
+                "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?",
         },
         {
-            "role": "assistant",
-            "content": "Weng earns 12/60 = $<<12/60=0.2>>0.2 per minute.\nWorking 50 minutes, she earned 0.2 x 50 = $<<0.2*50=10>>10.\n#### 10",
+            "role":
+                "assistant",
+            "content":
+                "Weng earns 12/60 = $<<12/60=0.2>>0.2 per minute.\nWorking 50 minutes, she earned 0.2 x 50 = $<<0.2*50=10>>10.\n#### 10",
         },
         question[0],
     ]
-    
+
     # ground_truth = row.get('reward_model', {}).get('ground_truth', 'N/A')
     # print("\n[Stage 2] Prompt Generation:")
     # print(f"Input question: {question}")

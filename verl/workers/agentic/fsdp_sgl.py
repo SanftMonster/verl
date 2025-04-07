@@ -22,6 +22,7 @@ from ..sharding_manager.base import BaseShardingManager
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv('VERL_PPO_LOGGING_LEVEL', 'INFO'))
 
+
 class FSDPSGLShardingManager(BaseShardingManager):
 
     def __init__(
@@ -55,7 +56,6 @@ class FSDPSGLShardingManager(BaseShardingManager):
                                          state_dict_type=StateDictType.SHARDED_STATE_DICT,
                                          state_dict_config=ShardedStateDictConfig())
 
-
         dp_rank = device_mesh.get_local_rank(0)
         addr = os.environ["MASTER_ADDR"]
         port = 40000
@@ -74,7 +74,8 @@ class FSDPSGLShardingManager(BaseShardingManager):
             tp_rank = device_mesh.get_local_rank(1)
             assert rollout_count == device_mesh.size(0), f"{rollout_count=}, {device_mesh.size(0)=}"
             if tp_rank == 0:
-                print(f"nodedup sharding manager starting weight pg {dp_rank=} {addr=} {port=} {role=} {rollout_count=}")
+                print(
+                    f"nodedup sharding manager starting weight pg {dp_rank=} {addr=} {port=} {role=} {rollout_count=}")
                 # self.inference_engine.init_weights_update_group(
                 #     master_address=addr,
                 #     master_port=port,
@@ -195,7 +196,8 @@ class FSDPSGLShardingManager(BaseShardingManager):
                         lst = [None]
                         tensor_list = []
                         torch.distributed.barrier(group=self.update_weight_pg)
-                        print(f"receiving descriptions: {torch.distributed.get_rank()=} {self.update_weight_pg.rank()=}")
+                        print(
+                            f"receiving descriptions: {torch.distributed.get_rank()=} {self.update_weight_pg.rank()=}")
                         torch.distributed.broadcast_object_list(lst, group_src=0, group=self.update_weight_pg)
                         print(f"receiving descriptions completed {lst=}")
                         for k, (shape, dtype) in lst[0].items():
@@ -211,7 +213,8 @@ class FSDPSGLShardingManager(BaseShardingManager):
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             loop_consumed_time = time.time() - each_loop_start_time
-            log_gpu_memory_usage(f'After loop {loop_count} {done=} {loop_consumed_time=} in sharding manager', logger=logger)
+            log_gpu_memory_usage(f'After loop {loop_count} {done=} {loop_consumed_time=} in sharding manager',
+                                 logger=logger)
             loop_count += 1
 
         log_gpu_memory_usage('After sync model weights in sharding manager', logger=logger)
@@ -278,7 +281,10 @@ class FSDPSGLShardingManager(BaseShardingManager):
         if tp_rank != 0:
             batch_size = description.pop('batch_size')
             batch = TensorDict(
-                {k: torch.empty(shape, dtype=dtype, device='cuda') for k, (shape, dtype) in description.items()}, batch_size=batch_size)
+                {
+                    k: torch.empty(shape, dtype=dtype, device='cuda') for k, (shape, dtype) in description.items()
+                },
+                batch_size=batch_size)
             data = DataProto(batch=batch)
         broadcast_dict_tensor(
             data.batch,

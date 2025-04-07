@@ -1,4 +1,5 @@
 import re
+
 EXTRACTION_TEMPLATE = """
 Look at the following question and an answer, your job is to extract the final answer.
 ## Question: 
@@ -25,26 +26,22 @@ Respond with only "Yes" or "No" (without quotes). Do not include a rationale.
     Expression 2: %(expression2)s
 """.strip()
 
-
 RETRY_COUNT = 3
 import requests
 import time
 import random
 
-def query_sglang_chat(
-    prompt,
-    urls,
-    use_logits=False,
-    skip_special_tokens=True,
-    n=1,
-    max_tokens=512,
-    temperature=0.0,
-    top_p=0.5
-):
+
+def query_sglang_chat(prompt,
+                      urls,
+                      use_logits=False,
+                      skip_special_tokens=True,
+                      n=1,
+                      max_tokens=512,
+                      temperature=0.0,
+                      top_p=0.5):
     messages = [{"role": "user", "content": prompt}]
-    extra_body = {
-        "skip_special_tokens": skip_special_tokens
-    }
+    extra_body = {"skip_special_tokens": skip_special_tokens}
 
     for try_counter in range(RETRY_COUNT):
         try:
@@ -61,23 +58,16 @@ def query_sglang_chat(
 
             api_base = random.choice(urls)
             url = api_base + "/chat/completions"
-            response = requests.post(
-                url,
-                json=request_data,
-                headers={"content-type": "application/json"},
-                timeout=180
-            )
+            response = requests.post(url, json=request_data, headers={"content-type": "application/json"}, timeout=180)
 
             if response.status_code == 200:
                 resp_json = response.json()
                 choices = resp_json['choices']
-                content_list = [choice['message']['content'].strip()
-                                for choice in choices]
+                content_list = [choice['message']['content'].strip() for choice in choices]
 
                 return content_list[0]
             else:
-                print(
-                    f"Failed to fetch response, chat: {response.status_code}, {response.text},{api_base}")
+                print(f"Failed to fetch response, chat: {response.status_code}, {response.text},{api_base}")
         except Exception as e:
             sleep_time = 2 * try_counter + 1
             if sleep_time > 30:
@@ -90,6 +80,7 @@ def query_sglang_chat(
             time.sleep(sleep_time)
 
     return ""
+
 
 def extract_solution(question, response, extractor_urls, eos_token):
     # response = response.strip().split('\n')
@@ -107,16 +98,12 @@ def extract_solution(question, response, extractor_urls, eos_token):
     if not resp_text.strip().endswith(eos_token):
         print(f"not end with {eos_token}")
         print(resp_text)
-        return 0 # -1
+        return 0  # -1
 
-    answer_template = EXTRACTION_TEMPLATE.format(
-        question=question,
-        answer=resp_text
-    )
+    answer_template = EXTRACTION_TEMPLATE.format(question=question, answer=resp_text)
     answer = None
     for _ in range(6):
-        extracted_answer = query_sglang_chat(
-            prompt=answer_template, urls=extractor_urls, temperature=0.0, top_p=0.5)
+        extracted_answer = query_sglang_chat(prompt=answer_template, urls=extractor_urls, temperature=0.0, top_p=0.5)
         if extracted_answer is None:
             answer = None
             continue
@@ -125,8 +112,9 @@ def extract_solution(question, response, extractor_urls, eos_token):
             break
     return answer
 
+
 def checker_check_equality(question: str, expr1: str, expr2: str, urls):
-    prompt = EQUALITY_TEMPLATE % {"question":question,"expression1": expr1, "expression2": expr2}
+    prompt = EQUALITY_TEMPLATE % {"question": question, "expression1": expr1, "expression2": expr2}
     # print(prompt)
     response = []
     for _ in range(10):
@@ -140,7 +128,15 @@ def checker_check_equality(question: str, expr1: str, expr2: str, urls):
         return 0
     return response.lower().strip() == "yes"
 
-def compute_score(solution_str, ground_truth, format_score=0., score=1., question="", extractor_urls=[], checker_urls=[], tokenizer=None):
+
+def compute_score(solution_str,
+                  ground_truth,
+                  format_score=0.,
+                  score=1.,
+                  question="",
+                  extractor_urls=[],
+                  checker_urls=[],
+                  tokenizer=None):
     """The scoring function for GSM8k.
 
     Reference: Trung, Luong, et al. "Reft: Reasoning with reinforced fine-tuning." Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers). 2024.
@@ -182,5 +178,12 @@ def compute_score(solution_str, ground_truth, format_score=0., score=1., questio
                 ans = format_score
 
     import json
-    print(json.dumps({"resp": resp_print, "answer": answer, "ground_truth": ground_truth, "judge": ans}, ensure_ascii=False))
+    print(
+        json.dumps({
+            "resp": resp_print,
+            "answer": answer,
+            "ground_truth": ground_truth,
+            "judge": ans
+        },
+                   ensure_ascii=False))
     return ans

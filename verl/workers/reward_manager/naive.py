@@ -22,7 +22,12 @@ class NaiveRewardManager:
     """The reward manager.
     """
 
-    def __init__(self, tokenizer, num_examine, compute_score=None, reward_fn_key='data_source', use_parallel=False) -> None:
+    def __init__(self,
+                 tokenizer,
+                 num_examine,
+                 compute_score=None,
+                 reward_fn_key='data_source',
+                 use_parallel=False) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or _default_compute_score
@@ -32,7 +37,7 @@ class NaiveRewardManager:
     def __call__(self, data: DataProto, return_dict=False):
         """We will expand this function gradually based on the available datasets"""
         # If there is rm score, we directly return rm score. Otherwise, we compute via rm_score_fn
-        
+
         if 'rm_scores' in data.batch.keys():
             if return_dict:
                 return {"reward": data.batch['rm_scores']}
@@ -41,9 +46,8 @@ class NaiveRewardManager:
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
         reward_extra_info = defaultdict(list)
-        
-        already_print_data_sources = {}
 
+        already_print_data_sources = {}
 
         if "rm_final_scores" in data.batch.keys():
             # valid_response_lengths = []
@@ -82,24 +86,22 @@ class NaiveRewardManager:
             extra_info = data_item.non_tensor_batch.get('extra_info', None)
 
             # print(f"naive reward manager {self.tokenizer=}")
-            score = self.compute_score(
-                data_source=data_source,
-                solution_str=response_str,
-                ground_truth=ground_truth,
-                extra_info=extra_info,
-                question=prompt_str,
-                tokenizer=self.tokenizer
-            )
+            score = self.compute_score(data_source=data_source,
+                                       solution_str=response_str,
+                                       ground_truth=ground_truth,
+                                       extra_info=extra_info,
+                                       question=prompt_str,
+                                       tokenizer=self.tokenizer)
 
             return i, valid_response_length, score, data_source, prompt_str, response_str, ground_truth
-        
+
         if self.use_parallel:
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(data)) as executor:
                 futures = [executor.submit(compute_score_for_item, i, data[i]) for i in range(len(data))]
                 results = [future.result() for future in concurrent.futures.as_completed(futures)]
         else:
             results = [compute_score_for_item(i, data[i]) for i in range(len(data))]
-        
+
         for i, valid_response_length, score, data_source, prompt_str, response_str, ground_truth in results:
             if isinstance(score, dict):
                 reward = score["score"]
