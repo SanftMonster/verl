@@ -39,6 +39,10 @@ rollout:
   disable_log_stats: True
   enable_chunked_prefill: True
   n: 1
+  sampling_params:
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 50
 actor:
   strategy: fsdp  # This is for backward-compatibility
   ulysses_sequence_parallel_size: 1 # sp size

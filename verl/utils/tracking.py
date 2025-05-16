@@ -38,7 +38,10 @@ class Tracking(object):
 
         if 'tracking' in default_backend or 'wandb' in default_backend:
             import wandb
-            wandb.init(project=project_name, name=experiment_name, config=config)
+            wandb.init(
+                project=project_name,
+                name=experiment_name,
+                config=config)
             self.logger['wandb'] = wandb
 
         if 'mlflow' in default_backend:
@@ -104,7 +107,11 @@ class Tracking(object):
     def log(self, data, step, backend=None):
         for default_backend, logger_instance in self.logger.items():
             if backend is None or default_backend in backend:
-                logger_instance.log(data=data, step=step)
+                if default_backend == "wandb": 
+                    # flush logs right away for wandb
+                    logger_instance.log(data=data, step=step, commit=True)
+                else:
+                    logger_instance.log(data=data, step=step)
 
     def __del__(self):
         if 'wandb' in self.logger:

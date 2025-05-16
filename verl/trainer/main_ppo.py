@@ -14,15 +14,17 @@
 """
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
+import os
+
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
-import os
 import ray
 import hydra
 
 
 def get_custom_reward_fn(config):
-    import importlib.util, sys
+    import importlib.util
+
     reward_fn_config = config.get("custom_reward_function") or {}
     file_path = reward_fn_config.get("path")
     if not file_path:
@@ -34,24 +36,18 @@ def get_custom_reward_fn(config):
     spec = importlib.util.spec_from_file_location("custom_module", file_path)
     module = importlib.util.module_from_spec(spec)
     try:
-        sys.modules["custom_module"] = module
         spec.loader.exec_module(module)
     except Exception as e:
         raise RuntimeError(f"Error loading module from '{file_path}': {e}")
 
     function_name = reward_fn_config.get("name")
+
     if not hasattr(module, function_name):
         raise AttributeError(f"Reward function '{function_name}' not found in '{file_path}'.")
 
     print(f"using customized reward function '{function_name}' from '{file_path}'")
-    raw_fn = getattr(module, function_name)
 
-    reward_kwargs = dict(reward_fn_config.get("reward_kwargs", {}))
-
-    def wrapped_fn(*args, **kwargs):
-        return raw_fn(*args, **kwargs, **reward_kwargs)
-
-    return wrapped_fn
+    return getattr(module, function_name)
 
 
 @hydra.main(config_path='config', config_name='ppo_trainer', version_base=None)
@@ -65,13 +61,15 @@ def run_ppo(config) -> None:
     os.environ["ENSURE_CUDA_VISIBLE_DEVICES"] = os.environ.get('CUDA_VISIBLE_DEVICES', '')
     if not ray.is_initialized():
         # this is for local ray cluster
-        ray.init(runtime_env={
-            'env_vars': {
-                'TOKENIZERS_PARALLELISM': 'true',
-                'NCCL_DEBUG': 'WARN',
-                'VLLM_LOGGING_LEVEL': 'WARN'
-            }
-        })
+        ray.init(
+            runtime_env={
+                'env_vars': {
+                    'TOKENIZERS_PARALLELISM': 'true',
+                    'NCCL_DEBUG': 'WARN',
+                    'VLLM_LOGGING_LEVEL': 'WARN',
+                    **dict(os.environ)
+                }
+            })
 
     runner = TaskRunner.remote()
     ray.get(runner.run.remote(config))
@@ -90,10 +88,9 @@ class TaskRunner:
 
         # download the checkpoint from hdfs
         local_path = copy_to_local(config.actor_rollout_ref.model.path)
-
         # instantiate tokenizer
         from verl.utils import hf_tokenizer, hf_processor
-        trust_remote_code = config.data.get('trust_remote_code', False)
+        trust_remote_code = config.data.get('trust_remote_code', True)
         tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
         processor = hf_processor(local_path, use_fast=True)  # used for multimodal LLM, could be none
 
@@ -115,19 +112,43 @@ class TaskRunner:
 
         from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
 
-        role_worker_mapping = {
-            Role.ActorRollout: ray.remote(ActorRolloutRefWorker),
-            Role.Critic: ray.remote(CriticWorker),
-        }
+        if config.trainer.get("hybrid_engine", True):
+            role_worker_mapping = {
+                Role.ActorRollout: ray.remote(ActorRolloutRefWorker),
+                Role.Critic: ray.remote(CriticWorker),
+                Role.RefPolicy: ray.remote(ActorRolloutRefWorker)
+            }
 
-        global_pool_id = 'global_pool'
-        resource_pool_spec = {
-            global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
-        }
-        mapping = {
-            Role.ActorRollout: global_pool_id,
-            Role.Critic: global_pool_id,
-        }
+            global_pool_id = 'global_pool'
+            resource_pool_spec = {
+                global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
+            }
+            mapping = {
+                Role.ActorRollout: global_pool_id,
+                Role.Critic: global_pool_id,
+                Role.RefPolicy: global_pool_id,
+            }
+        else:
+            role_worker_mapping = {
+                Role.Actor: ray.remote(ActorRolloutRefWorker),
+                Role.Critic: ray.remote(CriticWorker),
+                Role.RefPolicy: ray.remote(ActorRolloutRefWorker),
+                Role.Rollout: ray.remote(ActorRolloutRefWorker),
+            }
+
+            placement = config.trainer.placement
+            resource_pool_spec = {
+                "actor_pool": [placement["actor"]] * config.trainer.nnodes,
+                "ref_pool": [placement["ref"]] * config.trainer.nnodes,
+                "critic_pool": [placement.get("critic", 0)] * config.trainer.nnodes,
+                "rollout_pool": [placement["rollout"]] * config.trainer.nnodes,
+            }
+            mapping = {
+                Role.Actor: "actor_pool",
+                Role.Critic: "critic_pool",
+                Role.RefPolicy: "ref_pool",
+                Role.Rollout: "rollout_pool",
+            }
 
         # we should adopt a multi-source reward function here
         # - for rule-based rm, we directly call a reward score
@@ -157,29 +178,26 @@ class TaskRunner:
         elif reward_manager_name == 'prime':
             from verl.workers.reward_manager import PrimeRewardManager
             reward_manager_cls = PrimeRewardManager
-        elif reward_manager_name == 'batch':
-            from verl.workers.reward_manager import BatchRewardManager
-            reward_manager_cls = BatchRewardManager
         elif reward_manager_name == 'dapo':
             from verl.workers.reward_manager import DAPORewardManager
             reward_manager_cls = DAPORewardManager
+        elif reward_manager_name == 'swebench':
+            from verl.workers.reward_manager import SWEBenchRewardManager
+            reward_manager_cls = SWEBenchRewardManager
         else:
-
             raise NotImplementedError
 
         compute_score = get_custom_reward_fn(config)
-        reward_kwargs = dict(config.reward_model.get("reward_kwargs", {}))
         reward_fn = reward_manager_cls(tokenizer=tokenizer,
                                        num_examine=0,
-                                       compute_score=compute_score,
-                                       reward_fn_key=config.data.reward_fn_key,
-                                       **reward_kwargs)
+                                       config=config,
+                                       compute_score=compute_score)
 
         # Note that we always use function-based RM for validation
         val_reward_fn = reward_manager_cls(tokenizer=tokenizer,
                                            num_examine=1,
-                                           compute_score=compute_score,
-                                           reward_fn_key=config.data.reward_fn_key)
+                                           config=config,
+                                           compute_score=compute_score)
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
         trainer = RayPPOTrainer(config=config,

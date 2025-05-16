@@ -41,6 +41,9 @@ class FSDPSGLShardingManager(BaseShardingManager):
         self.model_config = model_config
         self.device_mesh = device_mesh
         self.exchange_size = exchange_size
+        # If negative, then set to None
+        if self.exchange_size is not None and self.exchange_size <= 0:
+            self.exchange_size = None
 
         # Full params
         self.full_params = full_params
@@ -173,6 +176,7 @@ class FSDPSGLShardingManager(BaseShardingManager):
 
             if self.role == "actor_rollout":
                 if local_rank == 0:
+                    print("Using `update_weights_from_tensor`")
                     self.inference_engine.update_weights_from_tensor(gpu_tensor_list)
                     del gpu_tensor_list
             else:
@@ -268,36 +272,60 @@ class FSDPSGLShardingManager(BaseShardingManager):
         tp_size = self.device_mesh.size(1)
         tp_rank = self.device_mesh.get_local_rank(1)
         src_rank = self.device_mesh.get_local_rank(0) * tp_size
-        # obs metrics are dynamically acquired, so we should build a same shape tensor dynamically, communicate shapes and dtypes first
+        
+        # First, broadcast information about the batch and whether non_tensor_batch exists
         if tp_rank == 0:
             description: dict = {k: (v.shape, v.dtype) for k, v in data.batch.items()}
             description['batch_size'] = data.batch.batch_size
+            # Add information about whether non_tensor_batch exists and its keys
+            has_non_tensor = hasattr(data, 'non_tensor_batch') and data.non_tensor_batch is not None
+            description['has_non_tensor'] = has_non_tensor
+            if has_non_tensor:
+                description['non_tensor_keys'] = list(data.non_tensor_batch.keys())
             lst = [description]
         else:
             lst = [None]
+        
         torch.distributed.broadcast_object_list(lst, src=src_rank, group=self.device_mesh.get_group(1))
         description = lst[0]
         print(f"{self.device_mesh.get_rank()=} {tp_size=} {src_rank=} {tp_rank=}, description: {description=}")
+        
+        # Create or reconstruct data on non-source ranks
         if tp_rank != 0:
             batch_size = description.pop('batch_size')
+            has_non_tensor = description.pop('has_non_tensor')
+            non_tensor_keys = description.pop('non_tensor_keys', [])
+            
             batch = TensorDict(
                 {
                     k: torch.empty(shape, dtype=dtype, device='cuda') for k, (shape, dtype) in description.items()
                 },
                 batch_size=batch_size)
+            
             data = DataProto(batch=batch)
+            
+            # Initialize non_tensor_batch if it should exist
+            if has_non_tensor:
+                data.non_tensor_batch = {key: [] for key in non_tensor_keys}
+        
+        # Broadcast tensor batch
         broadcast_dict_tensor(
             data.batch,
             src=src_rank,
             group=self.device_mesh.get_group(1),
         )
-        broadcast_dict_non_tensor(
-            data.non_tensor_batch,
-            src=src_rank,
-            group=self.device_mesh.get_group(1),
-        )
+        
+        # Only broadcast non_tensor_batch if it exists
+        if hasattr(data, 'non_tensor_batch') and data.non_tensor_batch is not None:
+            broadcast_dict_non_tensor(
+                data.non_tensor_batch,
+                src=src_rank,
+                group=self.device_mesh.get_group(1),
+            )
+        
         if tp_size > 1:
             # TODO: shall we build a micro_dp group for vllm when integrating with vLLM?
             local_prompts = data.chunk(chunks=tp_size)
             data = local_prompts[tp_rank]
+        
         return data
