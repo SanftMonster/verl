@@ -23,6 +23,7 @@ from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from verl import DataProto
+from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import compute_policy_loss, kl_penalty, agg_loss
 from verl.workers.actor import BasePPOActor
 from verl.utils.py_functional import append_to_dict
@@ -60,7 +61,7 @@ class DataParallelPPOActor(BasePPOActor):
 
     def _forward_micro_batch(self, micro_batch, temperature) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Returns: 
+        Returns:
             entropy: # (bs, response_len)
             log_probs: # (bs, response_len)
         """
@@ -80,6 +81,7 @@ class DataParallelPPOActor(BasePPOActor):
                 position_ids = position_ids.transpose(0, 1)  # (bsz, 3, seqlen) -> (3, bsz, seqlen)
 
             if self.use_remove_padding:
+                print(f"using remove padding, before {input_ids.shape=} {attention_mask.sum(dim=-1)=}")
                 input_ids_rmpad, indices, *_ = unpad_input(input_ids.unsqueeze(-1),
                                                            attention_mask)  # input_ids_rmpad (total_nnz, ...)
                 input_ids_rmpad = input_ids_rmpad.transpose(0, 1)  # (1, total_nnz)
@@ -107,6 +109,7 @@ class DataParallelPPOActor(BasePPOActor):
                 input_ids_rmpad_rolled = input_ids_rmpad_rolled.squeeze(0)  # ((total_nnz / sp) + pad)
 
                 # only pass input_ids and position_ids to enable flash_attn_varlen
+                print(f"rmpad before forward {input_ids_rmpad.shape=} {position_ids_rmpad.shape=}")
                 output = self.actor_module(input_ids=input_ids_rmpad,
                                            attention_mask=None,
                                            position_ids=position_ids_rmpad,
@@ -203,6 +206,7 @@ class DataParallelPPOActor(BasePPOActor):
         batch = data.select(batch_keys=select_keys).batch
         has_multi_modal_inputs = 'multi_modal_inputs' in data.non_tensor_batch.keys()
 
+        print(f"inside dp actor, {use_dynamic_bsz=}")
         if has_multi_modal_inputs:
             num_micro_batches = data.batch.batch_size[0] // micro_batch_size
             non_tensor_select_keys = ['multi_modal_inputs']
@@ -239,6 +243,8 @@ class DataParallelPPOActor(BasePPOActor):
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
 
         select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
+        if self.config.masking:
+            select_keys.append('loss_mask')
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
         batch = data.select(batch_keys=select_keys).batch
@@ -281,19 +287,27 @@ class DataParallelPPOActor(BasePPOActor):
                     responses = data['responses']
                     response_length = responses.size(1)
                     attention_mask = data['attention_mask']
-                    response_mask = attention_mask[:, -response_length:]
                     old_log_prob = data['old_log_probs']
                     advantages = data['advantages']
+                    response_mask = attention_mask[:, -response_length:]
+                    if self.config.masking:
+                        response_mask = data['loss_mask']
 
                     clip_ratio = self.config.clip_ratio
-                    clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
-                    clip_ratio_high = self.config.clip_ratio_high if self.config.clip_ratio_high is not None else clip_ratio
+                    clip_ratio_low = self.config.get('clip_ratio_low', clip_ratio)
+                    clip_ratio_high = self.config.get('clip_ratio_high', clip_ratio)
                     clip_ratio_c = self.config.get('clip_ratio_c', 3.0)
                     entropy_coeff = self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
 
                     # all return: (bsz, response_length)
                     entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+
+                    print(
+                        f"inside dp actor {response_mask.shape=} {response_length=} {responses.shape=} {old_log_prob.shape=} {log_prob.shape=}"
+                    )
+                    # NOTE (sumanthrh): THis is a quick fix when response_mask is zero
+                    preserve_grad = True
 
                     pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss(
                         old_log_prob=old_log_prob,
@@ -303,22 +317,48 @@ class DataParallelPPOActor(BasePPOActor):
                         cliprange=clip_ratio,
                         cliprange_low=clip_ratio_low,
                         cliprange_high=clip_ratio_high,
-                        clip_ratio_c=clip_ratio_c)
+                        clip_ratio_c=clip_ratio_c, 
+                        preserve_grad=preserve_grad)
+
+                    try:
+                        print(f"PG Loss before backward pass: {pg_loss=}")
+                        print(f"PG Loss requires grad?: {pg_loss.requires_grad}")
+                        print(f"PG Loss gradient function: {pg_loss.grad_fn}")
+                        print(f"PG Loss has NaN: {torch.isnan(pg_loss)}. Loss has Inf: {torch.isinf(pg_loss)}")
+                    except Exception as e:
+                        print(f"Cannot print PG loss details")
+
                     # compute entropy loss from entropy
-                    entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+                    entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, preserve_grad=preserve_grad)
+
+                    try:
+                        print(f"Entropy Loss before backward pass: {entropy_loss=}")
+                        print(f"Entropy Loss requires grad?: {entropy_loss.requires_grad}")
+                        print(f"Entropy Loss gradient function: {entropy_loss.grad_fn}")
+                        print(f"Entropy Loss has NaN: {torch.isnan(entropy_loss)}. Loss has Inf: {torch.isinf(entropy_loss)}")
+                    except Exception as e:
+                        print(f"Cannot print Entropy loss details")
 
                     # compute policy loss
                     policy_loss = pg_loss - entropy_loss * entropy_coeff
 
+                    try:
+                        print(f"Policy Loss before backward pass: {policy_loss=}")
+                        print(f"Policy Loss requires grad?: {policy_loss.requires_grad}")
+                        print(f"Policy Loss gradient function: {policy_loss.grad_fn}")
+                        print(f"Policy Loss has NaN: {torch.isnan(policy_loss)}. Loss has Inf: {torch.isinf(policy_loss)}")
+                    except Exception as e:
+                        print(f"Cannot print Policy loss details")
+
                     if self.config.use_kl_loss:
                         ref_log_prob = data['ref_log_prob']
                         # compute kl loss
-                        kld = kl_penalty(logprob=log_prob,
-                                         ref_logprob=ref_log_prob,
-                                         kl_penalty=self.config.kl_loss_type)
-                        kl_loss = agg_loss(loss_mat=kld,
-                                           loss_mask=response_mask,
-                                           loss_agg_mode=self.config.loss_agg_mode)
+                        kld = core_algos.kl_penalty(logprob=log_prob,
+                                                    ref_logprob=ref_log_prob,
+                                                    kl_penalty=self.config.kl_loss_type)
+                        print("kld.shape", kld.shape)
+                        print("response_mask.shape", response_mask.shape)
+                        kl_loss = masked_mean(kld, response_mask, preserve_grad=preserve_grad)
 
                         policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
                         metrics['actor/kl_loss'] = kl_loss.detach().item()
@@ -329,6 +369,11 @@ class DataParallelPPOActor(BasePPOActor):
                         loss = policy_loss * (len(data) / self.config.ppo_mini_batch_size)
                     else:
                         loss = policy_loss / self.gradient_accumulation
+
+                    print(f"Loss before backward pass: {loss=}")
+                    print(f"Loss requires grad?: {loss.requires_grad}")
+                    print(f"Loss gradient function: {loss.grad_fn}")
+                    print(f"Loss has NaN: {torch.isnan(loss)}. Loss has Inf: {torch.isinf(loss)}")
                     loss.backward()
 
                     data = {

@@ -38,6 +38,7 @@ from verl.utils.import_utils import import_external_libs
 from verl.utils.model import compute_position_id_with_mask
 from verl.utils.flops_counter import FlopsCounter
 from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
+from verl.workers.agentic.fsdp_sgl import FSDPSGLShardingManager
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 
 from codetiming import Timer
@@ -78,12 +79,17 @@ class ActorRolloutRefWorker(Worker):
         self.config = config
         import torch.distributed
         if not torch.distributed.is_initialized():
-            torch.distributed.init_process_group()
+            from datetime import timedelta
+            torch.distributed.init_process_group(timeout=timedelta(minutes=120))
 
         # build device mesh for FSDP
         world_size = torch.distributed.get_world_size()
         # TODO(sgm): support FSDP hybrid shard for larger model
         self.device_mesh = create_device_mesh(world_size=world_size, fsdp_size=self.config.actor.fsdp_config.fsdp_size)
+
+        print(
+            f"nodedup INIT ActorRolloutRefWorker: {role=} {torch.distributed.get_rank()=} {world_size=} {self.device_mesh=} {os.environ['CUDA_VISIBLE_DEVICES']=}"
+        )
 
         # build device mesh for Ulysses Sequence Parallel
         self.ulysses_device_mesh = None
@@ -232,9 +238,10 @@ class ActorRolloutRefWorker(Worker):
         else:
             param_dtype = torch.bfloat16
             reduce_dtype = torch.float32
-            buffer_dtype = torch.float32
+            buffer_dtype = torch.bfloat16
 
         mixed_precision = MixedPrecision(param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype)
+        print(f'actor module Mixed precision: {mixed_precision}')
 
         auto_wrap_policy = get_fsdp_wrap_policy(module=actor_module, config=fsdp_config.get('wrap_policy', None))
 
@@ -242,7 +249,7 @@ class ActorRolloutRefWorker(Worker):
             # TODO(zhangchi.usc1992, shengguangming) fix me. Current, auto_wrap_policy causes HFRollout to hang in Gemma
             auto_wrap_policy = None
 
-        print(f'wrap_policy: {auto_wrap_policy}')
+        # print(f'wrap_policy: {auto_wrap_policy}')
 
         fsdp_mesh = self.device_mesh
         sharding_strategy = get_sharding_strategy(fsdp_mesh)
@@ -268,7 +275,7 @@ class ActorRolloutRefWorker(Worker):
 
         # TODO: add more optimizer args into config
         if role == 'actor' and optim_config is not None:
-            from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
+            from verl.utils.torch_functional import get_constant_schedule_with_warmup
             actor_optimizer = optim.AdamW(actor_module_fsdp.parameters(),
                                           lr=optim_config.lr,
                                           betas=optim_config.get('betas', (0.9, 0.999)),
@@ -276,22 +283,14 @@ class ActorRolloutRefWorker(Worker):
 
             total_steps = optim_config.get('total_training_steps', 0)
             num_warmup_steps = int(optim_config.get('lr_warmup_steps', -1))
-            warmup_style = optim_config.get('warmup_style', 'constant')
             if num_warmup_steps < 0:
                 num_warmup_steps_ratio = optim_config.get('lr_warmup_steps_ratio', 0.)
                 num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
 
             print(f'Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}')
 
-            if warmup_style == 'constant':
-                actor_lr_scheduler = get_constant_schedule_with_warmup(optimizer=actor_optimizer,
-                                                                       num_warmup_steps=num_warmup_steps)
-            elif warmup_style == 'cosine':
-                actor_lr_scheduler = get_cosine_schedule_with_warmup(optimizer=actor_optimizer,
-                                                                     num_warmup_steps=num_warmup_steps,
-                                                                     num_training_steps=total_steps)
-            else:
-                raise NotImplementedError(f'Warmup style {warmup_style} is not supported')
+            actor_lr_scheduler = get_constant_schedule_with_warmup(optimizer=actor_optimizer,
+                                                                   num_warmup_steps=num_warmup_steps)
         else:
             actor_optimizer = None
             actor_lr_scheduler = None
@@ -306,6 +305,7 @@ class ActorRolloutRefWorker(Worker):
         infer_tp = self.config.rollout.tensor_model_parallel_size
         dp = self.world_size // infer_tp
         assert self.world_size % infer_tp == 0, f'rollout world_size: {self.world_size} is not divisible by infer_tp: {infer_tp}'
+        # print(f"{self.world_size=} {dp=} {infer_tp=}")
         rollout_device_mesh = init_device_mesh('cuda', mesh_shape=(dp, infer_tp), mesh_dim_names=['dp', 'infer_tp'])
         rollout_name = self.config.rollout.name
         if rollout_name == 'hf':
@@ -343,7 +343,7 @@ class ActorRolloutRefWorker(Worker):
                                                                full_params='hf' in self.config.rollout.load_format,
                                                                device_mesh=rollout_device_mesh)
             log_gpu_memory_usage('After building sharding manager', logger=None)
-
+        
         elif rollout_name == 'sglang':
             from verl.workers.rollout.sglang_rollout import SGLangRollout
             # NOTE(linjunrong): Due to recent fp8 support in SGLang. Now importing any symbol relate to SGLang's model_runner would check CUDA device capability.
@@ -368,14 +368,12 @@ class ActorRolloutRefWorker(Worker):
                                                                  device_mesh=rollout_device_mesh)
             log_gpu_memory_usage('After building sharding manager', logger=None)
         
-        # TODO(yuzhen): Merge into sglang, would be refactored soon
-        elif rollout_name == 'async':
+        elif self.config.rollout.name == "async":
             from verl.workers.agentic.async_rollout import AsyncRollout
             from verl.workers.agentic.fsdp_sgl import FSDPSGLShardingManager
             local_path = copy_to_local(self.config.model.path)
-            log_gpu_memory_usage(f'Before building {rollout_name} rollout', logger=None)
+            # print(f"nodedup creating async rollout instance, {torch.distributed.get_rank()=} {rollout_device_mesh.get_rank()=} {rollout_device_mesh.shape=}")
             rollout = AsyncRollout(model_path=local_path, config=self.config.rollout, device_mesh=rollout_device_mesh)
-            log_gpu_memory_usage(f'After building {rollout_name} rollout', logger=None)
             rollout_sharding_manager = FSDPSGLShardingManager(
                 module=self.actor_module_fsdp,
                 inference_engine=rollout.engine,
@@ -383,11 +381,9 @@ class ActorRolloutRefWorker(Worker):
                 full_params='hf' in self.config.rollout.load_format,
                 device_mesh=rollout_device_mesh,
                 role=self.role,
-                rollout_count=self.config.get("rollout_count"),
+                rollout_count=rollout_device_mesh.size(0),
                 exchange_size=self.config.get("exchange_size"),
             )
-            log_gpu_memory_usage('After building sharding manager', logger=None)
-
         else:
             raise NotImplementedError(f"Rollout name: {self.config.rollout.name} is not supported")
         return rollout, rollout_sharding_manager
@@ -438,9 +434,25 @@ class ActorRolloutRefWorker(Worker):
                                               actor_optimizer=self.actor_optimizer)
 
         if self._is_rollout:
+            # if not self._is_actor:
+            #     self.actor_module_fsdp = None
+            #     self.actor_optimizer = None
+            #     self.actor_lr_scheduler = None
+            #     self.actor_model_config = None
             self.rollout, self.rollout_sharding_manager = self._build_rollout(
                 trust_remote_code=self.config.model.get('trust_remote_code', False))
-
+        elif self._is_actor:
+            self.rollout_sharding_manager = FSDPSGLShardingManager(
+                module=self.actor_module_fsdp,
+                inference_engine=None,
+                model_config=self.actor_model_config,
+                full_params='hf' in self.config.rollout.load_format,
+                device_mesh=self.device_mesh,
+                role=self.role,
+                rollout_count=self.device_mesh.size(0),
+                exchange_size=self.config.get("exchange_size"),
+            )
+            
         if self._is_ref:
             self.ref_module_fsdp = self._build_model_optimizer(model_path=self.config.model.path,
                                                                fsdp_config=self.config.ref.fsdp_config,
@@ -464,7 +476,8 @@ class ActorRolloutRefWorker(Worker):
                 lr_scheduler=self.actor_lr_scheduler,
                 processing_class=self.processor if self.processor is not None else self.tokenizer,
                 checkpoint_contents=self.config.actor.checkpoint.contents)
-
+        torch.cuda.empty_cache()
+        
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def update_actor(self, data: DataProto):
         # Support all hardwares
@@ -513,8 +526,12 @@ class ActorRolloutRefWorker(Worker):
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
-        # Support all hardwares
         prompts = prompts.to(torch.cuda.current_device())
+
+        if self._is_actor and not self._is_rollout:
+            with self.rollout_sharding_manager:
+                pass
+            return
 
         assert self._is_rollout
         if self._is_offload_param:
@@ -796,23 +813,15 @@ class CriticWorker(Worker):
 
         total_steps = config.optim.get('total_training_steps', 0)
         num_warmup_steps = int(config.optim.get('lr_warmup_steps', -1))
-        warmup_style = config.optim.get('warmup_style', 'constant')
         if num_warmup_steps < 0:
             num_warmup_steps_ratio = config.optim.get('lr_warmup_steps_ratio', 0.)
             num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
 
         print(f'Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}')
 
-        from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
-        if warmup_style == 'constant':
-            critic_lr_scheduler = get_constant_schedule_with_warmup(optimizer=critic_optimizer,
-                                                                    num_warmup_steps=num_warmup_steps)
-        elif warmup_style == 'cosine':
-            critic_lr_scheduler = get_cosine_schedule_with_warmup(optimizer=critic_optimizer,
-                                                                  num_warmup_steps=num_warmup_steps,
-                                                                  num_training_steps=total_steps)
-        else:
-            raise NotImplementedError(f'Warmup style {warmup_style} is not supported')
+        from verl.utils.torch_functional import get_constant_schedule_with_warmup
+        critic_lr_scheduler = get_constant_schedule_with_warmup(optimizer=critic_optimizer,
+                                                                num_warmup_steps=num_warmup_steps)
 
         return critic_module, critic_optimizer, critic_lr_scheduler
 
@@ -1118,10 +1127,7 @@ class RewardModelWorker(Worker):
 
         for i in range(data.batch.batch_size[0]):
             # extract raw prompt
-            if isinstance(data.non_tensor_batch['raw_prompt'][i], list):
-                chat: list = data.non_tensor_batch['raw_prompt'][i]
-            else:
-                chat: list = data.non_tensor_batch['raw_prompt'][i].tolist()
+            chat: list = data.non_tensor_batch['raw_prompt'][i].tolist()
 
             # extract response
             response_ids = data.batch['responses'][i]
@@ -1175,16 +1181,6 @@ class RewardModelWorker(Worker):
         data = data.to(torch.cuda.current_device())
         if self._do_switch_chat_template:
             rm_data = self._switch_chat_template(data)
-        else:
-            rm_input_ids = data.batch['input_ids']
-            rm_attention_mask = data.batch['attention_mask']
-            rm_position_ids = data.batch['position_ids']
-            rm_inputs = {
-                'input_ids': rm_input_ids,
-                'attention_mask': rm_attention_mask,
-                'position_ids': rm_position_ids
-            }
-            rm_data = DataProto.from_dict(rm_inputs)
 
         # Support all hardwares
         rm_data.batch = rm_data.batch.to(torch.cuda.current_device())

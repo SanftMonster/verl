@@ -11,9 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# from . import gsm8k, math, prime_math, prime_code
 
 
-def _default_compute_score(data_source, solution_str, ground_truth, extra_info=None):
+def _default_compute_score(data_source, solution_str, ground_truth, extra_info=None, question="", tokenizer=None):
     if data_source == 'openai/gsm8k':
         from . import gsm8k
         res = gsm8k.compute_score(solution_str, ground_truth)
@@ -42,6 +43,12 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
     elif data_source in ['hiyouga/geometry3k']:
         from . import geo3k
         res = geo3k.compute_score(solution_str, ground_truth)
+    elif data_source in ["princeton-nlp/SWE-bench_Verified", "princeton-nlp/SWE-bench_Lite", "princeton-nlp/SWE-bench", "SWE-Gym/SWE-Gym"]:
+        from . import openhands_swebench
+        assert extra_info is not None and 'instance_id' in extra_info, "instance_id is required for openhands_swebench"
+        # assume that the instance id is in the extra_info
+        # print(f"Inside reward score init: calling into compute score")
+        res = openhands_swebench.compute_score(solution_str, ground_truth, extra_info['instance_id'], data_source)
     else:
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
 

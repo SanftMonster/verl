@@ -17,41 +17,31 @@ import re
 import os
 import torch
 import argparse
-import numpy as np
-from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForTokenClassification, AutoModelForVision2Seq
+from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForTokenClassification, AutoModelForVision2Seq, AutoTokenizer
 from concurrent.futures import ThreadPoolExecutor
+from torch.distributed._tensor import DTensor, Shard, Placement
 from safetensors.torch import load_file
-from torch.distributed._tensor import Shard, Placement
-try:
-    # for torch 2.5+
-    from torch.distributed.tensor import DTensor
-except ImportError:
-    from torch.distributed._tensor import DTensor
+
+try: 
+    from verl.utils.megatron_utils import get_model_checkpoint_path, get_hf_model_checkpoint_path
+except (ModuleNotFoundError, ImportError):
+    get_hf_model_checkpoint_path = None 
+    get_hf_model_checkpoint_path = None
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--backend', type=str, required=True, help="The backend of the model", choices=["fsdp", "megatron"])
+parser.add_argument('--backend', type = str, required=True, help="The backend of the model")
 parser.add_argument('--tie-word-embedding', action='store_true', help="Whether to tie word embedding weights")
 parser.add_argument('--is-value-model', action='store_true', help="Whether the model loaded as value model")
-parser.add_argument('--hf_model_path', type=str, required=True, help="The path for the huggingface model")
-parser.add_argument(
-    '--local_dir',
-    type=str,
-    required=True,
-    help=
-    "The path for your saved model. For megatron, point to the base dir of model, rng, optimizer checkpoints, commonly be `config.default_local_dir/global_step_\{global_step\}`."
-)
-parser.add_argument('--target_dir', required=False, default="tmp", type=str, help="The path for the target model")
-parser.add_argument("--hf_upload_path", default=False, type=str, help="The path of the huggingface repo to upload")
+parser.add_argument('--hf_model_path', type = str, required=True, help="The path for the huggingface model")
+parser.add_argument('--local_dir', type = str, required=True, help="The path for your saved model. For megatron, point to the base dir of model, rng, optimizer checkpoints, commonly be `config.default_local_dir/global_step_\{global_step\}`.")
+parser.add_argument('--target_dir', required=False, default="tmp", type = str, help="The path for the target model")
+parser.add_argument("--hf_upload_path", default=False, type = str, help="The path of the huggingface repo to upload")
 parser.add_argument("--test", action="store_true", help="test correctness of hf_model")
-parser.add_argument("--test_hf_dir",
-                    type=str,
-                    required=False,
-                    help="test correctness of hf_model, , with hf_model in checkpoint.contents")
+parser.add_argument("--test_hf_dir", type = str, required=False, help="test correctness of hf_model, , with hf_model in checkpoint.contents")
 args = parser.parse_args()
 os.makedirs(args.target_dir, exist_ok=True)
 if args.test:
     assert args.test_hf_dir is not None, f'You must run verl save checkpoint first, with hf_model in checkpoint.contents, and provide the directory here'
-
 
 def merge_by_placement(tensors: List[torch.Tensor], placement: Placement):
     if placement.is_replicate():
@@ -69,8 +59,12 @@ def upload_model_to_huggingface(hf_path):
     from huggingface_hub import HfApi
     api = HfApi()
     api.create_repo(repo_id=args.hf_upload_path, private=False, exist_ok=True)
-    api.upload_folder(folder_path=hf_path, repo_id=args.hf_upload_path, repo_type="model")
-
+    api.upload_folder(
+        folder_path=hf_path,
+        repo_id=args.hf_upload_path,
+        repo_type="model"
+    )
+    
 
 def convert_fsdp_checkpoints_to_hfmodels():
     local_dir = args.local_dir
@@ -81,28 +75,24 @@ def convert_fsdp_checkpoints_to_hfmodels():
     for filename in os.listdir(local_dir):
         match = re.match(r"model_world_size_(\d+)_rank_0\.pt", filename)
         if match:
-            world_size = match.group(1)
-            break
+            world_size = match.group(1)  
+            break  
     assert world_size, "No model file with the proper format"
-
-    state_dict = torch.load(os.path.join(local_dir, f'model_world_size_{world_size}_rank_{rank}.pt'),
-                            map_location='cpu')
+        
+    state_dict = torch.load(os.path.join(local_dir, f'model_world_size_{world_size}_rank_{rank}.pt'), map_location='cpu')
     pivot_key = sorted(list(state_dict.keys()))[0]
     weight = state_dict[pivot_key]
-
-    if isinstance(weight, DTensor):
-        # get sharding info
-        device_mesh = weight.device_mesh
-        mesh = device_mesh.mesh
-        mesh_dim_names = device_mesh.mesh_dim_names
-    else:
-        # for non-DTensor
-        mesh = np.array([int(world_size)], dtype=np.int64)
-        mesh_dim_names = ('fsdp',)
+    assert isinstance(weight, torch.distributed._tensor.DTensor)
+    # get sharding info
+    device_mesh = weight.device_mesh
+    mesh = device_mesh.mesh
+    mesh_dim_names = device_mesh.mesh_dim_names
 
     print(f'Got device mesh {mesh}, mesh_dim_names {mesh_dim_names}')
 
-    assert mesh_dim_names in (('fsdp',), ('ddp', 'fsdp')), f'Unsupported mesh_dim_names {mesh_dim_names}'
+    assert mesh_dim_names in (
+        ('fsdp',),
+    ), f'Unsupported mesh_dim_names {mesh_dim_names}'
 
     if 'tp' in mesh_dim_names:
         # fsdp * tp
@@ -137,7 +127,7 @@ def convert_fsdp_checkpoints_to_hfmodels():
             try:
                 tensor = model_state_dict.pop(key)
             except:
-                print("-" * 30)
+                print("-"*30)
                 print(model_state_dict)
             if isinstance(tensor, DTensor):
                 state_dict[key].append(tensor._local_tensor.bfloat16())
@@ -145,14 +135,12 @@ def convert_fsdp_checkpoints_to_hfmodels():
                 # replicated placement at dp dimension can be discarded
                 if mesh_dim_names[0] == 'dp':
                     placements = placements[1:]
-                elif mesh_dim_names[0] == 'ddp':
-                    placements = placements[1:]
                 if key not in param_placements:
                     param_placements[key] = placements
                 else:
                     assert param_placements[key] == placements
             else:
-                state_dict[key].append(tensor.bfloat16())
+                state_dict[key] = tensor.bfloat16()
 
     del model_state_dict_lst
 
@@ -160,19 +148,16 @@ def convert_fsdp_checkpoints_to_hfmodels():
         if not isinstance(state_dict[key], list):
             print(f"No need to merge key {key}")
             continue
-        if key in param_placements:
-            # merge shards
-            placements: Tuple[Shard] = param_placements[key]
-            if len(mesh_shape) == 1:
-                # 1-D list, FSDP without TP
-                assert len(placements) == 1
-                shards = state_dict[key]
-                state_dict[key] = merge_by_placement(shards, placements[0])
-            else:
-                # 2-D list, FSDP + TP
-                raise NotImplementedError("FSDP + TP is not supported yet")
+        # merge shards
+        placements: Tuple[Shard] = param_placements[key]
+        if len(mesh_shape) == 1:
+            # 1-D list, FSDP without TP
+            assert len(placements) == 1
+            shards = state_dict[key]
+            state_dict[key] = merge_by_placement(shards, placements[0])
         else:
-            state_dict[key] = torch.cat(state_dict[key], dim=0)
+            # 2-D list, FSDP + TP
+            raise NotImplementedError("FSDP + TP is not supported yet")
 
     print('Writing to local disk')
     if args.target_dir is None:
@@ -180,6 +165,7 @@ def convert_fsdp_checkpoints_to_hfmodels():
     else:
         hf_path = args.target_dir
     config = AutoConfig.from_pretrained(args.hf_model_path)
+    tokenizer = AutoTokenizer.from_pretrained(args.hf_model_path)
 
     if 'ForTokenClassification' in config.architectures[0]:
         auto_model = AutoModelForTokenClassification
@@ -196,6 +182,7 @@ def convert_fsdp_checkpoints_to_hfmodels():
 
     print(f'Saving model to {hf_path}')
     model.save_pretrained(hf_path, state_dict=state_dict)
+    tokenizer.save_pretrained(hf_path, state_dict=state_dict)
     del state_dict
     del model
     if args.hf_upload_path:
@@ -207,7 +194,6 @@ def get_tp_pp_rank_from_sharded_dir(sharded_dir):
     tp_rank = int(match.group(1))
     pp_rank = int(match.group(2))
     return tp_rank, pp_rank
-
 
 def check_megatron_checkpoint_path(model_path):
     sharded_dirs = sorted(os.listdir(model_path))
@@ -225,25 +211,22 @@ def check_megatron_checkpoint_path(model_path):
             pp_size = pp_rank + 1
     return sharded_dirs, tp_size, pp_size
 
-
-def convert_megatron_checkpoints_to_hfmodels():
-    from verl.utils.megatron_utils import get_model_checkpoint_path, get_hf_model_checkpoint_path
-
+def convert_megatron_checkpoints_to_hfmodes():
     local_path = args.local_dir
-
+    
     model_ckpt_path = get_model_checkpoint_path(local_path)
     hf_model_ckpt_path = get_hf_model_checkpoint_path(local_path)
     sharded_dirs, tp_size, pp_size = check_megatron_checkpoint_path(model_ckpt_path)
     mp_size = len(sharded_dirs)
-
+    
     model_state_dict_lst = []
     for i in range(pp_size):
         model_state_dict_lst.append([])
         for j in range(tp_size):
             model_state_dict_lst[i].append("")
-
+    
     print(f'sharded_dirs: {sharded_dirs}, tp_size: {tp_size}, pp_size: {pp_size}, mp_size: {mp_size}')
-
+    
     def process_one_shard(shard_dir):
         model_path = os.path.join(model_ckpt_path, shard_dir, "model.pt")
         state_dict = torch.load(model_path, map_location='cpu', weights_only=False)
@@ -255,12 +238,12 @@ def convert_megatron_checkpoints_to_hfmodels():
     #         executor.submit(process_one_shard, sharded_dirs[rank])
     for sharded_dir in sharded_dirs:
         process_one_shard(sharded_dir)
-
+    
     state_dict = {}
     config = AutoConfig.from_pretrained(args.hf_model_path)
     if args.test:
         ref_state_dict = load_file(os.path.join(args.test_hf_dir, 'model.safetensors'))
-
+    
     def merge_across_tp(key, tp_data):
         if "linear_fc1.weight" in key:
             # if the tensor is gate and proj
@@ -300,8 +283,8 @@ def convert_megatron_checkpoints_to_hfmodels():
             k = torch.cat(k_lst, dim=0)
             v = torch.cat(v_lst, dim=0)
 
-            tp_data = [q, k, v]
-
+            tp_data = [q,k,v]
+            
         elif "layer_norm" in key or "layernorm" in key or "output_layer" in key and args.is_value_model:
             tp_data = tp_data[0]
         else:
@@ -309,6 +292,7 @@ def convert_megatron_checkpoints_to_hfmodels():
             if "linear_fc2.weight" in key or "self_attention.linear_proj" in key:
                 dim = 1
             tp_data = torch.cat(tp_data, dim=dim)
+            
 
         return tp_data
 
@@ -329,23 +313,23 @@ def convert_megatron_checkpoints_to_hfmodels():
                     local_layer_no = int(key.split('.')[2])
                     layers_handled = max(local_layer_no, layers_handled)
                     global_layer_no = local_layer_no + layers_cum
-                    new_key_list = key.split('.')
+                    new_key_list=key.split('.')
                     new_key_list[2] = str(global_layer_no)
                     new_key = '.'.join(new_key_list)
 
                 tp_data = [model_state_dict_lst[pp_rank][tp_rank][vpp_rank][key] for tp_rank in range(tp_size)]
                 merged = merge_across_tp(new_key, tp_data)
-                if not isinstance(merged, list):
+                if not isinstance(merged,list):
                     state_dict[new_key] = merged
-                elif len(merged) == 3:
+                elif len(merged)==3:
                     # split qkv
-                    for n, d in zip(['q', 'k', 'v'], merged):
-                        state_dict[new_key.replace("linear_qkv", f"linear_{n}")] = d
-                elif len(merged) == 2:
+                    for n,d in zip(['q','k','v'], merged):
+                        state_dict[new_key.replace("linear_qkv",f"linear_{n}")] = d
+                elif len(merged)==2:
                     # split gate up
-                    state_dict[new_key.replace("linear_fc1", "gate_proj")] = merged[0]
-                    state_dict[new_key.replace("linear_fc1", "up_proj")] = merged[1]
-            layers_cum += layers_handled + 1  # zero based
+                    state_dict[new_key.replace("linear_fc1","gate_proj")] = merged[0]
+                    state_dict[new_key.replace("linear_fc1","up_proj")] = merged[1]
+            layers_cum += layers_handled+1 # zero based
 
     del model_state_dict_lst
 
@@ -367,7 +351,7 @@ def convert_megatron_checkpoints_to_hfmodels():
         ("self_attention.linear_k", "self_attn.k_proj"),
         ("self_attention.linear_v", "self_attn.v_proj"),
     ]
-
+    
     if args.test:
 
         for original_name, loaded_weight in state_dict.items():
@@ -383,7 +367,7 @@ def convert_megatron_checkpoints_to_hfmodels():
             param = ref_state_dict[name]
             assert loaded_weight.dtype == param.dtype
             torch.testing.assert_close(loaded_weight, param, atol=1e-4, rtol=1e-4)
-
+    
     print('Writing to local disk')
     if args.target_dir is None:
         hf_path = os.path.join(args.local_dir, 'huggingface')
@@ -409,7 +393,7 @@ def convert_megatron_checkpoints_to_hfmodels():
     del model
     if args.hf_upload_path:
         upload_model_to_huggingface(hf_path)
-
+    
 
 def _replace_name(megatron_name, name_mapping):
     for m_name, v_name in name_mapping:
@@ -432,12 +416,11 @@ def _replace_name(megatron_name, name_mapping):
         else:
             param_name = megatron_name.replace(m_name, v_name)
             return param_name
-
-
+            
 if __name__ == '__main__':
     if args.backend == "fsdp":
         convert_fsdp_checkpoints_to_hfmodels()
     elif args.backend == "megatron":
-        convert_megatron_checkpoints_to_hfmodels()
+        convert_megatron_checkpoints_to_hfmodes()
     else:
         raise NotImplementedError(f"{args.backend} not supported")
