@@ -13,54 +13,68 @@ build-backend = "setuptools.build_meta"
 # -------------------------------
 [project]
 name = "verl"
-# We'll mark the version as "dynamic" because it's read from the file "verl/version/version"
-# (PEP 621 calls this "dynamic version").
+# We'll mark the version as "dynamic" because it's read from the file "verl/version/version" 
+# (PEP 621 calls this "dynamic version"). 
 # The actual version is specified in the [tool.setuptools.dynamic] section below.
-dynamic = ["version", "dependencies", "optional-dependencies", "authors", "urls"]
+dynamic = ["version", "optional-dependencies", "authors", "urls"]
 
 description = "verl: Volcano Engine Reinforcement Learning for LLM"
 license = {file = "LICENSE"}  # or "Apache-2.0", if you prefer an SPDX identifier
 readme = {file = "README.md", content-type = "text/markdown"}
-requires-python = ">=3.8"
+requires-python = "==3.12.*"
 
-authors = [
-  { name = "Bytedance - Seed - MLSys", email = "zhangchi.usc1992@bytedance.com" },
-  { name = "Bytedance - Seed - MLSys", email = "gmsheng@connect.hku.hk" },
+dependencies=[
+  'accelerate',
+  'codetiming',
+  'datasets',
+  'dill',
+  'hydra-core',
+  'numpy',
+  'pandas',
+  'datasets',
+  'peft',
+  'pyarrow>=15.0.0',
+  'pybind11',
+  'pylatexenc',
+  'ray[default]>=2.10',
+  'tensordict<=0.6.2',
+  'torchdata',
+  'transformers',
+  'wandb',
+  "hf_transfer",
+  "torchdata",
+  "openhands-ai",
+  'sglang[all]>=0.4.6.post1', 
+  "flash-attn@https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abifalse-cp312-cp312-linux_x86_64.whl",
+  "streamlit",
+  "whatthepatch",
+  "retry",
+  "evaluate",
+  "swebench@https://github.com/SWE-Gym/SWE-Bench-Fork.git",
+  "swegym@https://github.com/SWE-Gym/SWE-Bench-Package.git",
+  "commit0",
+  "func_timeout",
+  "sympy",
+  "gdown",
+  "matplotlib",
+  "seaborn",
+  "tabulate",
+  "browsergym==0.10.2",
+  "browsergym-webarena==0.10.2",
+  "browsergym-miniwob==0.10.2",
+  "browsergym-visualwebarena==0.10.2",
+  'tensordict<=0.6.2',
+  'torch-memory-saver>=0.0.5',
+  'vllm>=0.7.3'
 ]
 
-# Dependencies corresponding to install_requires in setup.py
-dependencies = [
-    "accelerate",
-    "codetiming",
-    "datasets",
-    "dill",
-    "hydra-core",
-    "numpy",
-    "pandas",
-    "peft",
-    "pyarrow>=15.0.0",
-    "pybind11",
-    "pylatexenc",
-    "ray>=2.10",
-    "tensordict<0.6",
-    "torchdata",
-    "transformers",
-    'wandb',
-]
+[tool.uv]
+find-links = ["https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python"]
+override-dependencies = ["ray==2.43.0", "flash-attn@https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abifalse-cp312-cp312-linux_x86_64.whl", "xgrammar==0.1.17"]
 
-# Optional dependencies (extras_require in setup.py)
-[project.optional-dependencies]
-test = [
-  "pytest", "yapf", "py-spy",
-]
-prime = ["pyext"]
-gpu = ["liger-kernel", "flash-attn"]
-vllm = ["vllm<=0.6.3.post1"]
-sgl = ["sglang[all]>=0.4.3.post2"]
 
-# URLs
-[project.urls]
-Homepage = "https://github.com/volcengine/verl"
+[tool.uv.sources]
+openhands-ai = { path = "./SkyRL-OpenHands", editable = true }
 
 # -------------------------------
 # tool.setuptools - Additional config

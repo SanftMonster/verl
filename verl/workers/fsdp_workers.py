@@ -80,7 +80,7 @@ class ActorRolloutRefWorker(Worker):
         import torch.distributed
         if not torch.distributed.is_initialized():
             from datetime import timedelta
-            torch.distributed.init_process_group(backend="nccl", timeout=timedelta(minutes=60))
+            torch.distributed.init_process_group(timeout=timedelta(minutes=120))
 
         # build device mesh for FSDP
         world_size = torch.distributed.get_world_size()
@@ -381,7 +381,7 @@ class ActorRolloutRefWorker(Worker):
                 full_params='hf' in self.config.rollout.load_format,
                 device_mesh=rollout_device_mesh,
                 role=self.role,
-                rollout_count=self.config.get("rollout_count"),
+                rollout_count=rollout_device_mesh.size(0),
                 exchange_size=self.config.get("exchange_size"),
             )
         else:
@@ -434,11 +434,11 @@ class ActorRolloutRefWorker(Worker):
                                               actor_optimizer=self.actor_optimizer)
 
         if self._is_rollout:
-            if not self._is_actor:
-                self.actor_module_fsdp = None
-                self.actor_optimizer = None
-                self.actor_lr_scheduler = None
-                self.actor_model_config = None
+            # if not self._is_actor:
+            #     self.actor_module_fsdp = None
+            #     self.actor_optimizer = None
+            #     self.actor_lr_scheduler = None
+            #     self.actor_model_config = None
             self.rollout, self.rollout_sharding_manager = self._build_rollout(
                 trust_remote_code=self.config.model.get('trust_remote_code', False))
         elif self._is_actor:
@@ -449,7 +449,7 @@ class ActorRolloutRefWorker(Worker):
                 full_params='hf' in self.config.rollout.load_format,
                 device_mesh=self.device_mesh,
                 role=self.role,
-                rollout_count=self.config.get("rollout_count"),
+                rollout_count=self.device_mesh.size(0),
                 exchange_size=self.config.get("exchange_size"),
             )
             

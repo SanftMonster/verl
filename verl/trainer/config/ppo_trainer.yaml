@@ -15,6 +15,10 @@ data:
   filter_overlong_prompts_workers: 1
   truncation: error
   image_key: images
+  dataloader_num_workers: 8
+
+verifier:
+  reward_coef: 1
 
 actor_rollout_ref:
   hybrid_engine: True
@@ -25,6 +29,7 @@ actor_rollout_ref:
     enable_gradient_checkpointing: True
     use_remove_padding: False
   actor:
+    masking: False
     strategy: fsdp  # This is for backward-compatibility
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: null # will be deprecated, use ppo_micro_batch_size_per_gpu
@@ -75,7 +80,8 @@ actor_rollout_ref:
     log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
     ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size} # sp size
   rollout:
-    name: vllm
+    name: async
+    task_type: 'swegym'
     temperature: 1.0
     top_k: -1 # 0 for hf rollout, -1 for vllm rollout
     top_p: 1
@@ -103,6 +109,22 @@ actor_rollout_ref:
     do_sample: True
     # number of responses (i.e. num sample times)
     n: 1 # > 1 for grpo
+    enable_memory_saver: False
+    sampling_params:
+      temperature: 1.0
+      top_p: 0.95
+      max_new_tokens: ${data.max_response_length}
+      top_k: -1 # -1 is disable
+      min_p: 0
+      repetition_penalty: 1
+    # for agentic workflow
+    max_parallel_agents: 1 # how many agents for rollout at the same time
+    max_eval_parallel_agents: -1 # how many agents for evaluation at the same time. If -1, will be same as `max_parallel_agents`. 
+    log_messages_dir: null
+    n_trajectories: 1 # This is the n for agent training.
+    max_iterations: 1 # how many turn to generate for one agent
+    remove_think_tokens: False #  whether to remove think tokens for policy model 
+    qwen3_enable_thinking: True # qwen3: whether to enable thinking mode or not
     val_kwargs:
       # sampling parameters for validation
       top_k: -1 # 0 for hf rollout, -1 for vllm rollout
@@ -110,6 +132,8 @@ actor_rollout_ref:
       temperature: 0
       n: 1
       do_sample: False # default eager for validation
+  exchange_size: -1
+  
 
 critic:
   rollout_n: ${actor_rollout_ref.rollout.n}
@@ -171,6 +195,8 @@ reward_model:
   use_dynamic_bsz: ${critic.use_dynamic_bsz}
   forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
   reward_manager: naive
+  score_timeout: 300
+  num_processes: 128
 
 custom_reward_function:
   path: null
@@ -202,7 +228,7 @@ trainer:
   # auto: find the last ckpt to resume. If can't find, start from scratch
   resume_mode: auto # or disable or resume_path if resume_from_path is set
   resume_from_path: null
-  val_before_train: True
+  val_before_train: False
   test_freq: -1
   critic_warmup: 0
   default_hdfs_dir: null
@@ -210,3 +236,5 @@ trainer:
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
   max_actor_ckpt_to_keep: null
   max_critic_ckpt_to_keep: null
+
+

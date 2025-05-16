@@ -21,7 +21,6 @@ import torch
 from verl import DataProto
 from verl.utils.reward_score import _default_compute_score
 
-
 async def single_compute_score(evaluation_func, completion, reference, task, task_extra_info, executor, timeout=300.):
     loop = asyncio.get_running_loop()
     try:
@@ -143,6 +142,7 @@ class PrimeRewardManager:
         data_sources = data.non_tensor_batch['data_source']
 
         scores = self.verify(data)
+        # scores = self.verify_ray(data)
 
         for i in range(len(data)):
             data_source = data_sources[i]

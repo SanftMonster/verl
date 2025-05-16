@@ -116,11 +116,14 @@ def masked_sum(values, mask, axis=None):
     return (values * mask).sum(axis=axis)
 
 
-def masked_mean(values, mask, axis=None):
+def masked_mean(values, mask, axis=None, preserve_grad: bool = False):
     """Compute mean of tensor with a masked values."""
     mask_sum = mask.sum(axis=axis)
     if (mask_sum == 0).any():
         # If mask is all zeros, return zeros with the same shape as the result would have
+        if preserve_grad:
+            # preserves gradient from `values` and `mask`
+            return (values * mask).sum(axis=axis)
         return torch.zeros_like((values * mask).sum(axis=axis))
     return (values * mask).sum(axis=axis) / mask_sum
 
@@ -200,7 +203,11 @@ def broadcast_dict_tensor(tensors: Union[Dict[str, torch.Tensor], TensorDict], s
 
 def broadcast_dict_non_tensor(data: Dict[str, List], src, group):
     for key in data.keys():
-        torch.distributed.broadcast_object_list(data[key], src=src, group=group)
+        # Wrap the list in another list to broadcast it as a single object
+        object_list = [data[key]]
+        torch.distributed.broadcast_object_list(object_list, src=src, group=group)
+        # Update the original list with the received data
+        data[key] = object_list[0]
 
 
 def allgather_dict_tensors(tensors: Union[Dict[str, torch.Tensor], TensorDict], size, group, dim=0):
@@ -243,11 +250,11 @@ def all_gather_dict_non_tensors(data: Dict[str, List], size, group):
     for key in sorted_keys:
         val = data[key]
         output[key] = [None for _ in range(size)]
-        print(f"nodedup all gathering {torch.distributed.get_rank()=} {key=} {val=}")
+        # print(f"nodedup all gathering {torch.distributed.get_rank()=} {key=} {val=}")
         torch.distributed.all_gather_object(output[key], val, group=group)
-        print(f"nodedup all gathering {torch.distributed.get_rank()=} {key=} {output[key]=}")
+        # print(f"nodedup all gathering {torch.distributed.get_rank()=} {key=} {output[key]=}")
         output[key] = np.concatenate(output[key], axis=0)
-    print(f"nodedup all gathering {torch.distributed.get_rank()=} {output=}")
+    # print(f"nodedup all gathering {torch.distributed.get_rank()=} {output=}")
     return output
 
 
