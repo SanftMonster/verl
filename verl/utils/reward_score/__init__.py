@@ -40,23 +40,15 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
     elif data_source in ['codecontests', 'apps', 'codeforces', 'taco']:
         from . import prime_code
         res = prime_code.compute_score(solution_str, ground_truth, continuous=True)
-    elif data_source in ['hotpotqa', 'hotpotQA']:
-        from . import hotpotqa
-        res = hotpotqa.compute_score(solution_str=solution_str,
-                                     ground_truth=ground_truth,
-                                     question=question,
-                                     extractor_urls=["http://172.21.1.152:8000/v1"],
-                                     checker_urls=["http://172.21.1.97:8000/v1"],
-                                     tokenizer=tokenizer)
-        # lurui: must return a float
-        print(f"judgement by hotpotqa: {res}")
-        if isinstance(res, float):
-            return float(res)
-        else:
-            raise NotImplementedError
     elif data_source in ['hiyouga/geometry3k']:
         from . import geo3k
         res = geo3k.compute_score(solution_str, ground_truth)
+    elif data_source in ["princeton-nlp/SWE-bench_Verified", "princeton-nlp/SWE-bench_Lite", "princeton-nlp/SWE-bench", "SWE-Gym/SWE-Gym"]:
+        from . import openhands_swebench
+        assert extra_info is not None and 'instance_id' in extra_info, "instance_id is required for openhands_swebench"
+        # assume that the instance id is in the extra_info
+        # print(f"Inside reward score init: calling into compute score")
+        res = openhands_swebench.compute_score(solution_str, ground_truth, extra_info['instance_id'], data_source)
     else:
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
 

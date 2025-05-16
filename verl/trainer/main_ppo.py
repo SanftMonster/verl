@@ -181,23 +181,23 @@ class TaskRunner:
         elif reward_manager_name == 'dapo':
             from verl.workers.reward_manager import DAPORewardManager
             reward_manager_cls = DAPORewardManager
-        elif reward_manager_name == "swedev":
-            from verl.workers.reward_manager import SWEDevRewardManager
-            reward_manager_cls = SWEDevRewardManager
+        elif reward_manager_name == 'swebench':
+            from verl.workers.reward_manager import SWEBenchRewardManager
+            reward_manager_cls = SWEBenchRewardManager
         else:
             raise NotImplementedError
 
         compute_score = get_custom_reward_fn(config)
         reward_fn = reward_manager_cls(tokenizer=tokenizer,
                                        num_examine=0,
-                                       compute_score=compute_score,
-                                       reward_fn_key=config.data.reward_fn_key)
+                                       config=config,
+                                       compute_score=compute_score)
 
         # Note that we always use function-based RM for validation
         val_reward_fn = reward_manager_cls(tokenizer=tokenizer,
                                            num_examine=1,
-                                           compute_score=compute_score,
-                                           reward_fn_key=config.data.reward_fn_key)
+                                           config=config,
+                                           compute_score=compute_score)
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
         trainer = RayPPOTrainer(config=config,

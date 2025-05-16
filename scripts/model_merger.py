@@ -17,12 +17,16 @@ import re
 import os
 import torch
 import argparse
-from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForTokenClassification, AutoModelForVision2Seq
+from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForTokenClassification, AutoModelForVision2Seq, AutoTokenizer
 from concurrent.futures import ThreadPoolExecutor
 from torch.distributed._tensor import DTensor, Shard, Placement
 from safetensors.torch import load_file
 
-from verl.utils.megatron_utils import get_model_checkpoint_path, get_hf_model_checkpoint_path
+try: 
+    from verl.utils.megatron_utils import get_model_checkpoint_path, get_hf_model_checkpoint_path
+except (ModuleNotFoundError, ImportError):
+    get_hf_model_checkpoint_path = None 
+    get_hf_model_checkpoint_path = None
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--backend', type = str, required=True, help="The backend of the model")
@@ -161,6 +165,7 @@ def convert_fsdp_checkpoints_to_hfmodels():
     else:
         hf_path = args.target_dir
     config = AutoConfig.from_pretrained(args.hf_model_path)
+    tokenizer = AutoTokenizer.from_pretrained(args.hf_model_path)
 
     if 'ForTokenClassification' in config.architectures[0]:
         auto_model = AutoModelForTokenClassification
@@ -177,6 +182,7 @@ def convert_fsdp_checkpoints_to_hfmodels():
 
     print(f'Saving model to {hf_path}')
     model.save_pretrained(hf_path, state_dict=state_dict)
+    tokenizer.save_pretrained(hf_path, state_dict=state_dict)
     del state_dict
     del model
     if args.hf_upload_path:

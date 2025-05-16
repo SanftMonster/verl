@@ -41,10 +41,6 @@ class Tracking(object):
             wandb.init(
                 project=project_name,
                 name=experiment_name,
-                id=experiment_name,  # for resume
-                group=experiment_name,  # for merge
-                job_type='train',
-                resume="allow",
                 config=config)
             self.logger['wandb'] = wandb
 
@@ -111,7 +107,11 @@ class Tracking(object):
     def log(self, data, step, backend=None):
         for default_backend, logger_instance in self.logger.items():
             if backend is None or default_backend in backend:
-                logger_instance.log(data=data, step=step)
+                if default_backend == "wandb": 
+                    # flush logs right away for wandb
+                    logger_instance.log(data=data, step=step, commit=True)
+                else:
+                    logger_instance.log(data=data, step=step)
 
     def __del__(self):
         if 'wandb' in self.logger:

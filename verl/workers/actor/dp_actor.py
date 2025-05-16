@@ -243,9 +243,8 @@ class DataParallelPPOActor(BasePPOActor):
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
 
         select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
-        if self.config.get('multi_turn', False):
+        if self.config.masking:
             select_keys.append('loss_mask')
-
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
         batch = data.select(batch_keys=select_keys).batch
@@ -290,15 +289,9 @@ class DataParallelPPOActor(BasePPOActor):
                     attention_mask = data['attention_mask']
                     old_log_prob = data['old_log_probs']
                     advantages = data['advantages']
-
-                    # assert self.config.get('multi_turn') == True
-                    if self.config.get('multi_turn', False):
-                        # loss mask like 1,1,1,0,0,1,1,0,0,0,1,1,1,0,...
-                        loss_mask = data['loss_mask']
-                        response_mask = loss_mask[:, -response_length:]
-                    else:
-                        # only align single-turn
-                        response_mask = attention_mask[:, -response_length:]
+                    response_mask = attention_mask[:, -response_length:]
+                    if self.config.masking:
+                        response_mask = data['loss_mask']
 
                     clip_ratio = self.config.clip_ratio
                     clip_ratio_low = self.config.get('clip_ratio_low', clip_ratio)
@@ -313,6 +306,8 @@ class DataParallelPPOActor(BasePPOActor):
                     print(
                         f"inside dp actor {response_mask.shape=} {response_length=} {responses.shape=} {old_log_prob.shape=} {log_prob.shape=}"
                     )
+                    # NOTE (sumanthrh): THis is a quick fix when response_mask is zero
+                    preserve_grad = True
 
                     pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss(
                         old_log_prob=old_log_prob,
@@ -322,12 +317,38 @@ class DataParallelPPOActor(BasePPOActor):
                         cliprange=clip_ratio,
                         cliprange_low=clip_ratio_low,
                         cliprange_high=clip_ratio_high,
-                        clip_ratio_c=clip_ratio_c)
+                        clip_ratio_c=clip_ratio_c, 
+                        preserve_grad=preserve_grad)
+
+                    try:
+                        print(f"PG Loss before backward pass: {pg_loss=}")
+                        print(f"PG Loss requires grad?: {pg_loss.requires_grad}")
+                        print(f"PG Loss gradient function: {pg_loss.grad_fn}")
+                        print(f"PG Loss has NaN: {torch.isnan(pg_loss)}. Loss has Inf: {torch.isinf(pg_loss)}")
+                    except Exception as e:
+                        print(f"Cannot print PG loss details")
+
                     # compute entropy loss from entropy
-                    entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+                    entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, preserve_grad=preserve_grad)
+
+                    try:
+                        print(f"Entropy Loss before backward pass: {entropy_loss=}")
+                        print(f"Entropy Loss requires grad?: {entropy_loss.requires_grad}")
+                        print(f"Entropy Loss gradient function: {entropy_loss.grad_fn}")
+                        print(f"Entropy Loss has NaN: {torch.isnan(entropy_loss)}. Loss has Inf: {torch.isinf(entropy_loss)}")
+                    except Exception as e:
+                        print(f"Cannot print Entropy loss details")
 
                     # compute policy loss
                     policy_loss = pg_loss - entropy_loss * entropy_coeff
+
+                    try:
+                        print(f"Policy Loss before backward pass: {policy_loss=}")
+                        print(f"Policy Loss requires grad?: {policy_loss.requires_grad}")
+                        print(f"Policy Loss gradient function: {policy_loss.grad_fn}")
+                        print(f"Policy Loss has NaN: {torch.isnan(policy_loss)}. Loss has Inf: {torch.isinf(policy_loss)}")
+                    except Exception as e:
+                        print(f"Cannot print Policy loss details")
 
                     if self.config.use_kl_loss:
                         ref_log_prob = data['ref_log_prob']
@@ -337,7 +358,7 @@ class DataParallelPPOActor(BasePPOActor):
                                                     kl_penalty=self.config.kl_loss_type)
                         print("kld.shape", kld.shape)
                         print("response_mask.shape", response_mask.shape)
-                        kl_loss = masked_mean(kld, response_mask)
+                        kl_loss = masked_mean(kld, response_mask, preserve_grad=preserve_grad)
 
                         policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
                         metrics['actor/kl_loss'] = kl_loss.detach().item()
@@ -349,9 +370,10 @@ class DataParallelPPOActor(BasePPOActor):
                     else:
                         loss = policy_loss / self.gradient_accumulation
 
-                    # lurui: check whether the loss is valid, if -inf, somewhere must be wrong
-                    print("loss: ", loss)
-
+                    print(f"Loss before backward pass: {loss=}")
+                    print(f"Loss requires grad?: {loss.requires_grad}")
+                    print(f"Loss gradient function: {loss.grad_fn}")
+                    print(f"Loss has NaN: {torch.isnan(loss)}. Loss has Inf: {torch.isinf(loss)}")
                     loss.backward()
 
                     data = {
