@@ -47,7 +47,7 @@ from verl import DataProto
 from verl.models.transformers.monkey_patch import apply_monkey_patch
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, make_nd_compute_dataproto_dispatch_fn, register
-from verl.utils import hf_processor, hf_tokenizer
+from verl.utils import hf_processor, hf_tokenizer, sync_chat_template
 from verl.utils.activation_offload import enable_activation_offloading
 from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
 from verl.utils.config import omega_conf_to_dataclass
@@ -381,12 +381,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # TODO(zhangchi.usc1992): 1. support create from random initialized model. 2. Support init with FSDP directly
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
         self.processor = hf_processor(local_path, trust_remote_code=trust_remote_code)
-
-        if self.config.model.get("custom_chat_template", None) is not None:
-            if self.processor is not None:
-                self.processor.chat_template = self.config.model.custom_chat_template
-            else:
-                self.tokenizer.chat_template = self.config.model.custom_chat_template
+        sync_chat_template(
+            self.tokenizer,
+            self.processor,
+            custom_chat_template=self.config.model.get("custom_chat_template", None),
+        )
 
         torch_dtype = fsdp_config.get("model_dtype", None)
         if torch_dtype is None:
@@ -461,7 +460,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     case _:
                         actor_module_class = AutoModel
             else:
-                if type(actor_model_config) in AutoModelForVision2Seq._model_mapping.keys():
+                if getattr(actor_model_config, "model_type", None) == "qwen3_omni_moe":
+                    from transformers.models.qwen3_omni_moe import Qwen3OmniMoeThinkerForConditionalGeneration
+
+                    actor_module_class = Qwen3OmniMoeThinkerForConditionalGeneration
+                elif type(actor_model_config) in AutoModelForVision2Seq._model_mapping.keys():
                     actor_module_class = AutoModelForVision2Seq
                 elif type(actor_model_config) in AutoModelForCausalLM._model_mapping.keys():
                     actor_module_class = AutoModelForCausalLM
@@ -470,10 +473,14 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 else:
                     actor_module_class = AutoModel
 
+            actor_pretrained_config = actor_model_config
+            if getattr(actor_model_config, "model_type", None) == "qwen3_omni_moe":
+                actor_pretrained_config = actor_model_config.thinker_config
+
             actor_module = actor_module_class.from_pretrained(
                 pretrained_model_name_or_path=local_path,
                 torch_dtype=torch_dtype,
-                config=actor_model_config,
+                config=actor_pretrained_config,
                 trust_remote_code=trust_remote_code,
                 attn_implementation=attn_implementation,
             )
@@ -1407,12 +1414,11 @@ class CriticWorker(Worker, DistProfilerExtension):
         tokenizer_path = copy_to_local(config.model.tokenizer_path, use_shm=use_shm)
         self.tokenizer = hf_tokenizer(tokenizer_path, trust_remote_code=config.model.get("trust_remote_code", False))
         self.processor = hf_processor(tokenizer_path, trust_remote_code=config.model.get("trust_remote_code", False))
-
-        if self.config.model.get("custom_chat_template", None) is not None:
-            if self.processor is not None:
-                self.processor.chat_template = self.config.model.custom_chat_template
-            else:
-                self.tokenizer.chat_template = self.config.model.custom_chat_template
+        sync_chat_template(
+            self.tokenizer,
+            self.processor,
+            custom_chat_template=self.config.model.get("custom_chat_template", None),
+        )
         override_config = OmegaConf.to_container(OmegaConf.create(self.config.model.get("override_config", {})))
         override_config_kwargs = {
             "bos_token_id": self.tokenizer.bos_token_id,

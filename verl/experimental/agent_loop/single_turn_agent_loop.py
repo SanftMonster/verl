@@ -42,16 +42,20 @@ class SingleTurnAgentLoop(AgentLoopBase):
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         messages = list(kwargs["raw_prompt"])
 
-        # 1. extract images and videos from messages
-        multi_modal_data = await self.process_vision_info(messages)
+        # 1. extract multimodal inputs from messages
+        multi_modal_data = await self.process_multi_modal_info(messages)
         images = multi_modal_data.get("images")
         videos = multi_modal_data.get("videos")
+        audios = multi_modal_data.get("audios")
+        mm_processor_kwargs = self._get_mm_processor_kwargs(audios)
 
         # 2. apply chat template and tokenize
         prompt_ids = await self.apply_chat_template(
             messages,
             images=images,
             videos=videos,
+            audios=audios,
+            mm_processor_kwargs=mm_processor_kwargs,
         )
 
         # 3. generate sequences
@@ -63,6 +67,8 @@ class SingleTurnAgentLoop(AgentLoopBase):
                 sampling_params=sampling_params,
                 image_data=images,
                 video_data=videos,
+                audio_data=audios,
+                mm_processor_kwargs=mm_processor_kwargs,
             )
         if metrics.get("num_preempted") is None:
             metrics["num_preempted"] = output.num_preempted if output.num_preempted is not None else -1
@@ -79,6 +85,7 @@ class SingleTurnAgentLoop(AgentLoopBase):
                 else None
             ),
             multi_modal_data=multi_modal_data,
+            mm_processor_kwargs=mm_processor_kwargs,
             num_turns=2,
             metrics=metrics,
             extra_fields=output.extra_fields,
@@ -113,6 +120,8 @@ class DiffusionSingleTurnAgentLoop(AgentLoopBase):
         tools: list[dict] | None = None,
         images: list[Image.Image] | None = None,
         videos: list[tuple[torch.Tensor, dict]] | None = None,
+        audios: list[Any] | None = None,
+        mm_processor_kwargs: dict[str, Any] | None = None,
         remove_system_prompt: bool = False,
     ) -> list[int]:
         """Tokenize on the asyncio thread for fast tokenizers when no processor is used.
@@ -128,6 +137,8 @@ class DiffusionSingleTurnAgentLoop(AgentLoopBase):
                 tools=tools,
                 images=images,
                 videos=videos,
+                audios=audios,
+                mm_processor_kwargs=mm_processor_kwargs,
                 remove_system_prompt=remove_system_prompt,
             )
         if getattr(self.tokenizer, "is_fast", False):
@@ -148,6 +159,8 @@ class DiffusionSingleTurnAgentLoop(AgentLoopBase):
             tools=tools,
             images=images,
             videos=videos,
+            audios=audios,
+            mm_processor_kwargs=mm_processor_kwargs,
             remove_system_prompt=remove_system_prompt,
         )
 
@@ -157,16 +170,30 @@ class DiffusionSingleTurnAgentLoop(AgentLoopBase):
         for key in self._KEYS_EXCLUDED_FROM_GENERATE:
             kwargs.pop(key, None)
 
-        # 1. extract images and videos from messages
-        multi_modal_data = await self.process_vision_info(raw_prompt)
+        # 1. extract multimodal inputs from messages
+        multi_modal_data = await self.process_multi_modal_info(raw_prompt)
         images = multi_modal_data.get("images")
         videos = multi_modal_data.get("videos")
+        audios = multi_modal_data.get("audios")
+        mm_processor_kwargs = self._get_mm_processor_kwargs(audios)
 
         # 2. apply chat template and tokenize
-        prompt_ids = await self.apply_chat_template(raw_prompt, images=images, videos=videos)
+        prompt_ids = await self.apply_chat_template(
+            raw_prompt,
+            images=images,
+            videos=videos,
+            audios=audios,
+            mm_processor_kwargs=mm_processor_kwargs,
+        )
 
         if raw_negative_prompt is not None:
-            negative_prompt_ids = await self.apply_chat_template(raw_negative_prompt, images=images, videos=videos)
+            negative_prompt_ids = await self.apply_chat_template(
+                raw_negative_prompt,
+                images=images,
+                videos=videos,
+                audios=audios,
+                mm_processor_kwargs=mm_processor_kwargs,
+            )
         else:
             negative_prompt_ids = None
 
@@ -179,6 +206,8 @@ class DiffusionSingleTurnAgentLoop(AgentLoopBase):
                 sampling_params=sampling_params,
                 image_data=images,
                 video_data=videos,
+                audio_data=audios,
+                mm_processor_kwargs=mm_processor_kwargs,
                 negative_prompt_ids=negative_prompt_ids,
                 **kwargs,
             )
@@ -190,6 +219,7 @@ class DiffusionSingleTurnAgentLoop(AgentLoopBase):
             response_diffusion_output=output.diffusion_output,
             response_logprobs=output.log_probs,
             multi_modal_data=multi_modal_data,
+            mm_processor_kwargs=mm_processor_kwargs,
             num_turns=2,
             metrics=metrics,
             extra_fields=output.extra_fields,

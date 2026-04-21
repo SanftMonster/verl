@@ -174,7 +174,49 @@ class vLLMColocateWorkerExtension:
         # patch compute_logits to avoid sampling OOV token
         monkey_patch_compute_logits(self.model_runner.model, vocab_size)
         # patch weight loader to support MoE model
-        patch_vllm_moe_model_weight_loader(self.model_runner.model)
+        patch_vllm_moe_model_weight_loader(self._get_weight_sync_model())
+
+    def _get_weight_sync_model(self):
+        model = self.model_runner.model
+        visited_ids = set()
+
+        while id(model) not in visited_ids:
+            visited_ids.add(id(model))
+            if model.__class__.__name__ != "CUDAGraphWrapper":
+                break
+
+            if hasattr(model, "unwrap") and callable(model.unwrap):
+                next_model = model.unwrap()
+            elif hasattr(model, "model"):
+                next_model = model.model
+            else:
+                break
+
+            if next_model is model:
+                break
+            model = next_model
+
+        return model
+
+    def _normalize_weight_names(self, weights: list[tuple[str, torch.Tensor]]) -> list[tuple[str, torch.Tensor]]:
+        model = self._get_weight_sync_model()
+        if model.__class__.__name__ != "Qwen3OmniMoeThinkerForConditionalGeneration":
+            return weights
+
+        # vLLM's Qwen3-Omni thinker ``load_weights`` runs keys through ``hf_to_vllm_mapper``,
+        # which expects HF full-omni checkpoint keys (``thinker.audio_tower.*``,
+        # ``thinker.model.*``, ``thinker.lm_head.*``). The training-side standalone thinker
+        # state_dict emits bare keys (``audio_tower.*``, ``model.*``, ``lm_head.*``), so add
+        # the prefix back; otherwise ``AutoWeightsLoader`` raises ValueError on
+        # ``model.*`` / ``lm_head.*`` (vLLM nests them under ``language_model``).
+        normalized = [(name if name.startswith("thinker.") else f"thinker.{name}", tensor) for name, tensor in weights]
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Qwen3-Omni vLLM weight key normalization sample: before=%s after=%s",
+                [name for name, _ in weights[:5]],
+                [name for name, _ in normalized[:5]],
+            )
+        return normalized
 
     def update_weights_from_ipc(self, peft_config: dict = None, base_sync_done=False, use_shm: bool = False):
         """Update the weights of the rollout model."""
@@ -235,7 +277,7 @@ class vLLMColocateWorkerExtension:
             # Some post-load transforms are non-idempotent; run once after all buckets.
             from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
-            model = self.model_runner.model
+            model = self._get_weight_sync_model()
             model_config = self.model_runner.vllm_config.model_config
             process_weights_after_loading(model, model_config, self.device)
 
@@ -254,6 +296,7 @@ class vLLMColocateWorkerExtension:
         else:
             # Add the FP8 related logic here as sharding manager has been deprecated.
             # Check if FP8 quantization is enabled and apply appropriate weight loading
+            weights = self._normalize_weight_names(weights)
             if is_fp8_model(self.model_runner.vllm_config):
                 logger.info(f"FP8 model detected (async): {self.model_runner.vllm_config.quant_config}")
                 # Convert bf16 weights to fp8 format before loading
@@ -327,6 +370,13 @@ class vLLMOmniColocateWorkerExtension(_OmniWorkerBase):
             logger.info(f"vLLM-Omni load weights, loaded_params: {len(weights)}")
         else:
             logger.info("Loading standard weights (async)")
+            model = self.model_runner.model
+            if getattr(model, "__class__", type(model)).__name__ == "CUDAGraphWrapper" and hasattr(model, "unwrap"):
+                model = model.unwrap()
+            if model.__class__.__name__ == "Qwen3OmniMoeThinkerForConditionalGeneration":
+                weights = [
+                    (f"thinker.{name}" if not name.startswith("thinker.") else name, tensor) for name, tensor in weights
+                ]
             self.load_weights(weights)
 
     def _get_zmq_handle(self) -> str:

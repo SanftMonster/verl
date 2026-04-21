@@ -108,6 +108,7 @@ class AsyncTeacherLLMServerManager(AsyncLLMServerManager):
         self,
         sequence_ids: list[int],
         multi_modal_data: Optional[dict[str, Any]] = None,
+        mm_processor_kwargs: Optional[dict[str, Any]] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute teacher log probabilities for a single unpadded sequence."""
         multi_modal_data = multi_modal_data or {}
@@ -117,6 +118,8 @@ class AsyncTeacherLLMServerManager(AsyncLLMServerManager):
             sampling_params=_get_teacher_sampling_params(self.distillation_config, self.distillation_loss_config),
             image_data=multi_modal_data.get("images"),
             video_data=multi_modal_data.get("videos"),
+            audio_data=multi_modal_data.get("audios"),
+            mm_processor_kwargs=mm_processor_kwargs,
         )
         # Shapes: # S, (1 or K), where S is the response length, K is either 1 or topk depending on
         # the distillation loss settings.
@@ -128,6 +131,7 @@ class AsyncTeacherLLMServerManager(AsyncLLMServerManager):
     async def compute_teacher_logprobs_batch(self, data: DataProto) -> DataProto:
         """Compute teacher log probabilities for a batch of prompt-response pairs."""
         multi_modal_data_batch = data.non_tensor_batch.get("teacher_multi_modal_data")
+        mm_processor_kwargs_batch = data.non_tensor_batch.get("teacher_mm_processor_kwargs")
         tasks = []
         lengths = []
         prompt_width = data.batch["prompts"].shape[1]
@@ -138,12 +142,14 @@ class AsyncTeacherLLMServerManager(AsyncLLMServerManager):
             item = data[i : i + 1]
             sequence_ids, prompt_length, response_length = _unpad_teacher_inputs(item)
             multi_modal_data = None if multi_modal_data_batch is None else multi_modal_data_batch[i]
+            mm_processor_kwargs = None if mm_processor_kwargs_batch is None else mm_processor_kwargs_batch[i]
             lengths.append((prompt_length, response_length))
             tasks.append(
                 asyncio.create_task(
                     self.compute_teacher_logprobs_single(
                         sequence_ids=sequence_ids,
                         multi_modal_data=multi_modal_data,
+                        mm_processor_kwargs=mm_processor_kwargs,
                     )
                 )
             )

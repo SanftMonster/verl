@@ -24,6 +24,7 @@ from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, Processor
 
 from verl.tools.schemas import OpenAIFunctionToolCall, OpenAIFunctionToolSchema, ToolResponse
 from verl.utils.model import compute_position_id_with_mask
+from verl.utils.tokenizer import build_multimodal_processor_inputs, is_qwen3_omni_processor
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -91,6 +92,7 @@ class AsyncRolloutRequest(BaseModel):
     multi_modal_keys: Optional[list[str]] = None
     multi_modal_data: Optional[dict[str, Any]] = None
     multi_modal_inputs: Optional[dict[str, torch.Tensor]] = None
+    mm_processor_kwargs: Optional[dict[str, Any]] = None
     tool_schemas: Optional[list[OpenAIFunctionToolSchema]] = None
     tools_kwargs: dict[str, Any] = {}
     interaction_kwargs: dict[str, Any] = {}
@@ -132,9 +134,9 @@ class AsyncRolloutRequest(BaseModel):
 
         values["messages"] = [Message.model_validate(msg) for msg in messages]
 
-        # If there is no multi_modal_keys, we assume the multi-modal data is image and video.
+        # If there is no multi_modal_keys, we assume the multi-modal data is image, video and audio.
         if not values.get("multi_modal_keys"):
-            values["multi_modal_keys"] = ["image", "video"]
+            values["multi_modal_keys"] = ["image", "video", "audio"]
         if not values.get("multi_modal_data"):
             values["multi_modal_data"] = {key: [] for key in values["multi_modal_keys"]}
         else:
@@ -144,16 +146,20 @@ class AsyncRolloutRequest(BaseModel):
                     values["multi_modal_data"][key] = []
         if not values.get("multi_modal_inputs"):
             values["multi_modal_inputs"] = {}
+        if not values.get("mm_processor_kwargs"):
+            values["mm_processor_kwargs"] = {}
 
         tools = (
             [tool.model_dump() for tool in tool_schemas] if (tool_schemas := values.get("tool_schemas", [])) else None
         )
 
         multi_modal_data = values["multi_modal_data"]
+        mm_processor_kwargs = values["mm_processor_kwargs"]
         tokens_without_prompt = cls._handle_apply_chat_template(
             processing_class,
             messages,
             multi_modal_data=multi_modal_data,
+            mm_processor_kwargs=mm_processor_kwargs,
             tools=tools,
             add_generation_prompt=False,
             tokenize=True,
@@ -167,6 +173,7 @@ class AsyncRolloutRequest(BaseModel):
                 processing_class,
                 messages,
                 multi_modal_data=multi_modal_data,
+                mm_processor_kwargs=mm_processor_kwargs,
                 tools=tools,
                 add_generation_prompt=True,
                 tokenize=True,
@@ -195,7 +202,11 @@ class AsyncRolloutRequest(BaseModel):
             values["multi_modal_inputs"] = multi_modal_inputs
 
             values["position_ids"] = values["prompt_position_ids"] = cls._get_position_ids(
-                processing_class, values["input_ids"], values["attention_mask"], multi_modal_inputs
+                processing_class,
+                values["input_ids"],
+                values["attention_mask"],
+                multi_modal_inputs,
+                mm_processor_kwargs=mm_processor_kwargs,
             )
 
         values["prompt_ids"], values["prompt_attention_mask"] = values["input_ids"], values["attention_mask"]
@@ -205,6 +216,7 @@ class AsyncRolloutRequest(BaseModel):
             processing_class,
             BASE_CHAT_HISTORY,
             multi_modal_data=multi_modal_data,
+            mm_processor_kwargs=mm_processor_kwargs,
             tools=tools,
             add_generation_prompt=False,
             tokenize=True,
@@ -214,6 +226,7 @@ class AsyncRolloutRequest(BaseModel):
             processing_class,
             BASE_CHAT_HISTORY,
             multi_modal_data=multi_modal_data,
+            mm_processor_kwargs=mm_processor_kwargs,
             tools=tools,
             add_generation_prompt=True,
             tokenize=True,
@@ -226,6 +239,7 @@ class AsyncRolloutRequest(BaseModel):
         processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin,
         messages: list[Message],
         multi_modal_data: dict[str, Any],
+        mm_processor_kwargs: Optional[dict[str, Any]] = None,
         tools: Optional[list[OpenAIFunctionToolSchema]] = None,
         add_generation_prompt: bool = False,
         tokenize: bool = False,
@@ -244,13 +258,22 @@ class AsyncRolloutRequest(BaseModel):
                 )
             model_inputs = processing_class(text=[raw_prompt], return_tensors="pt")
         elif isinstance(processing_class, ProcessorMixin):
-            # When we update multi_model_keys, we also need to update this logic
             images = images if len(images := multi_modal_data.get("image", [])) > 0 else None
             videos = videos if len(videos := multi_modal_data.get("video", [])) > 0 else None
-            model_inputs = processing_class(text=[raw_prompt], images=images, videos=videos, return_tensors="pt")
+            audio = audio if len(audio := multi_modal_data.get("audio", [])) > 0 else None
+            model_inputs = build_multimodal_processor_inputs(
+                processing_class,
+                text=[raw_prompt],
+                images=images,
+                videos=videos,
+                audio=audio,
+                mm_processor_kwargs=mm_processor_kwargs,
+            )
         else:
             raise ValueError(f"Unsupported processing class type: {type(processing_class)}")
 
+        if hasattr(model_inputs, "convert_to_tensors"):
+            model_inputs = model_inputs.convert_to_tensors("pt")
         model_inputs = dict(model_inputs)
         if return_dict:
             return model_inputs
@@ -263,7 +286,9 @@ class AsyncRolloutRequest(BaseModel):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         multi_modal_inputs: Optional[dict[str, torch.Tensor]] = None,
+        mm_processor_kwargs: Optional[dict[str, Any]] = None,
     ) -> torch.Tensor:
+        mm_processor_kwargs = mm_processor_kwargs or {}
         # special case for qwen2vl
         is_qwen2vl = (
             hasattr(processing_class, "image_processor")
@@ -293,6 +318,32 @@ class AsyncRolloutRequest(BaseModel):
                 attention_mask=attention_mask.squeeze(0),
             )
             return new_position_ids  # (3, seq_len)
+        elif is_qwen3_omni_processor(processing_class):
+            image_grid_thw = video_grid_thw = video_second_per_grid = feature_attention_mask = None
+            if multi_modal_inputs:
+                image_grid_thw = multi_modal_inputs.get("image_grid_thw")
+                video_grid_thw = multi_modal_inputs.get("video_grid_thw")
+                video_second_per_grid = multi_modal_inputs.get("video_second_per_grid")
+                feature_attention_mask = multi_modal_inputs.get("feature_attention_mask")
+
+            audio_seqlens = None
+            if feature_attention_mask is not None:
+                audio_seqlens = feature_attention_mask.sum(dim=-1)
+
+            new_position_ids, _ = processing_class.get_rope_index(
+                input_ids=input_ids,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                attention_mask=attention_mask,
+                use_audio_in_video=bool(mm_processor_kwargs.get("use_audio_in_video", False)),
+                audio_seqlens=audio_seqlens,
+                second_per_grids=video_second_per_grid,
+            )
+            return (
+                new_position_ids.squeeze(1)
+                if new_position_ids.dim() == 3 and new_position_ids.shape[1] == 1
+                else new_position_ids
+            )
         else:
             return compute_position_id_with_mask(attention_mask)  # (1, seq_len)
 
@@ -317,7 +368,11 @@ class AsyncRolloutRequest(BaseModel):
             self._update_multi_modal_inputs(new_multi_modal_inputs)
 
         new_position_ids = self._get_position_ids(
-            processing_class, new_input_ids, attention_mask, new_multi_modal_inputs
+            processing_class,
+            new_input_ids,
+            attention_mask,
+            new_multi_modal_inputs,
+            mm_processor_kwargs=self.mm_processor_kwargs,
         )
 
         last_pos = self.position_ids[..., -1:]
@@ -368,6 +423,7 @@ class AsyncRolloutRequest(BaseModel):
                 processing_class,
                 messages,
                 multi_modal_data=self.multi_modal_data,
+                mm_processor_kwargs=self.mm_processor_kwargs,
                 tools=tools,
                 add_generation_prompt=True,
                 tokenize=True,
@@ -388,7 +444,13 @@ class AsyncRolloutRequest(BaseModel):
         # We don't need to pass multi_modal_data here because we don't have any multi-modal data from Engine
         # Inference, it is pure text.
         content_ids = self._handle_apply_chat_template(
-            processing_class, messages, multi_modal_data={}, tools=tools, add_generation_prompt=False, tokenize=True
+            processing_class,
+            messages,
+            multi_modal_data={},
+            mm_processor_kwargs={},
+            tools=tools,
+            add_generation_prompt=False,
+            tokenize=True,
         )[..., self.base_conv_wo_gen_prompt_end_pos :]
         self._update_input_ids(processing_class, content_ids, attention_mask=True, loss_mask=False)
 
@@ -407,7 +469,13 @@ class AsyncRolloutRequest(BaseModel):
             # We don't need to pass multi_modal_data here because we don't have any multi-modal data from Engine
             # Inference, it is pure text.
             content_ids = self._handle_apply_chat_template(
-                processing_class, messages, multi_modal_data={}, tools=tools, add_generation_prompt=False, tokenize=True
+                processing_class,
+                messages,
+                multi_modal_data={},
+                mm_processor_kwargs={},
+                tools=tools,
+                add_generation_prompt=False,
+                tokenize=True,
             )[..., self.base_conv_with_gen_prompt_end_pos :]
         self._update_input_ids(processing_class, content_ids, attention_mask=True, loss_mask=True)
 
@@ -449,6 +517,7 @@ class AsyncRolloutRequest(BaseModel):
             processing_class,
             messages,
             multi_modal_data=delta_multi_modal_data,
+            mm_processor_kwargs=self.mm_processor_kwargs,
             tools=tools,
             add_generation_prompt=False,
             tokenize=True,
@@ -573,6 +642,7 @@ class AsyncRolloutRequest(BaseModel):
                 processing_class,
                 messages,
                 multi_modal_data=self.multi_modal_data,
+                mm_processor_kwargs=self.mm_processor_kwargs,
                 tools=tools,
                 add_generation_prompt=False,
                 tokenize=True,

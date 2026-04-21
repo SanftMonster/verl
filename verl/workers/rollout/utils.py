@@ -18,6 +18,8 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI
 
+from verl.utils.tokenizer import get_processor_token_id
+
 logger = logging.getLogger(__file__)
 
 
@@ -27,6 +29,14 @@ def get_max_position_embeddings(hf_config) -> int:
         text_config = getattr(hf_config, "text_config", None)
         if text_config is not None:
             max_len = getattr(text_config, "max_position_embeddings", None)
+    if max_len is None:
+        thinker_config = getattr(hf_config, "thinker_config", None)
+        if thinker_config is not None:
+            max_len = getattr(thinker_config, "max_position_embeddings", None)
+            if max_len is None:
+                text_config = getattr(thinker_config, "text_config", None)
+                if text_config is not None:
+                    max_len = getattr(text_config, "max_position_embeddings", None)
 
     if max_len is None:
         raise ValueError("max_position_embeddings not found in HFModelConfig!")
@@ -98,9 +108,14 @@ def qwen2_5_vl_dedup_image_tokens(prompt_ids: list[int], processor):
         and hasattr(processor, "image_processor")
         and "Qwen2VLImageProcessor" in processor.image_processor.__class__.__name__
     ):
+        image_token_id = get_processor_token_id(processor, "image")
+        video_token_id = get_processor_token_id(processor, "video")
+        if image_token_id is None or video_token_id is None:
+            return prompt_ids
+
         prompt_ids = np.array(prompt_ids)
         mask = np.ones(len(prompt_ids), dtype=bool)
-        is_value = (prompt_ids == processor.image_token_id) | (prompt_ids == processor.video_token_id)
+        is_value = (prompt_ids == image_token_id) | (prompt_ids == video_token_id)
         mask[1:] &= ~(is_value[1:] & is_value[:-1])
         return prompt_ids[mask].tolist()
     else:

@@ -251,6 +251,8 @@ class TRTLLMHttpServer:
         request_id: str,
         image_data: Optional[list[Any]] = None,
         video_data: Optional[list[Any]] = None,
+        audio_data: Optional[list[Any]] = None,
+        mm_processor_kwargs: Optional[dict[str, Any]] = None,
     ) -> TokenOutput:
         from tensorrt_llm.llmapi import SamplingParams
 
@@ -262,13 +264,16 @@ class TRTLLMHttpServer:
         sampling_params.update(self.sampling_args)
 
         trt_llm_sampling_params = SamplingParams(**sampling_params)
+        if audio_data is not None:
+            raise NotImplementedError("TRT-LLM rollout does not support audio inputs yet.")
+
         if self.is_vlm_model and (image_data or video_data):
             deduped_ids = qwen2_5_vl_dedup_image_tokens(prompt_ids, self.model_config.processor)
             org_prompt = self.llm.tokenizer.decode(deduped_ids)
             input_dict = {
                 "prompt": org_prompt,
                 "multi_modal_data": {},
-                "mm_processor_kwargs": {},
+                "mm_processor_kwargs": dict(mm_processor_kwargs or {}),
             }
             if image_data:
                 input_dict["multi_modal_data"]["image"] = image_data

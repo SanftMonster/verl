@@ -233,11 +233,14 @@ class FSDPEngine(BaseEngine):
 
             if self.model_config.model_type == "language_model":
                 auto_class = get_hf_auto_model_class(hf_config=self.model_config.hf_config)
+                hf_pretrained_config = self.model_config.hf_config
+                if getattr(self.model_config.hf_config, "model_type", None) == "qwen3_omni_moe":
+                    hf_pretrained_config = self.model_config.hf_config.thinker_config
 
                 module = auto_class.from_pretrained(
                     pretrained_model_name_or_path=self.model_config.local_path,
                     torch_dtype=torch_dtype,
-                    config=self.model_config.hf_config,
+                    config=hf_pretrained_config,
                     trust_remote_code=self.model_config.trust_remote_code,
                 )
             else:

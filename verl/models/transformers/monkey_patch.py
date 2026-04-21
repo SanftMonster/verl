@@ -469,6 +469,20 @@ def apply_monkey_patch(
         if ulysses_sp_size > 1:
             patch_vlm_for_ulysses_input_slicing(Glm4vTextModel)
 
+    elif model.config.model_type == "qwen3_omni_moe_thinker":
+        # The only supported sub-model of ``Qwen3OmniMoeForConditionalGeneration``
+        # in RL training today is the Thinker. Upstream transformers iterates
+        # ``for expert_idx in expert_hit`` inside ``Qwen3OmniMoeThinkerTextSparseMoeBlock``,
+        # which builds a different autograd graph per FSDP2 rank whenever the
+        # set of hit experts differs between ranks. FSDP2 then launches
+        # mismatched ReduceScatters and corrupts gradients — the symptom
+        # surfaces later as a ``torch.utils.checkpoint.CheckpointError``
+        # (see verl#3258, pytorch/pytorch#171355). Patch the experts block so
+        # every rank always exercises every expert.
+        from verl.models.transformers.qwen3_omni_moe import patch_qwen3_omni_moe_sparse_moe_block_forward
+
+        patch_qwen3_omni_moe_sparse_moe_block_forward()
+
     elif model.config.model_type == "kimi_vl":
         if use_remove_padding or ulysses_sp_size > 1:
             # TODO: Changes need to be made when transformers are adapted.
