@@ -13,6 +13,7 @@
 # limitations under the License.
 """Utils for tokenization."""
 
+import json
 import types
 import warnings
 
@@ -24,7 +25,6 @@ __all__ = [
     "build_multimodal_processor_inputs",
     "ensure_qwen3_omni_processor_attrs",
     "get_processor_token_id",
-    "sync_chat_template",
 ]
 
 
@@ -270,31 +270,40 @@ def set_pad_token_id(tokenizer):
         warnings.warn(f"tokenizer.pad_token is None. Now set to {tokenizer.eos_token}", stacklevel=1)
 
 
-def sync_chat_template(tokenizer, processor=None, custom_chat_template=None):
-    """Keep tokenizer and processor chat templates consistent.
+def _load_external_chat_template(name_or_path, **kwargs):
+    # Some HF model repos (e.g. Qwen3-Omni) keep ``chat_template`` in a
+    # standalone ``chat_template.json`` rather than ``tokenizer_config.json``.
+    # ``AutoTokenizer`` does not consume that file, so the resulting tokenizer
+    # has ``chat_template is None``. Load it here as a fallback.
+    try:
+        from transformers.utils import cached_file
+    except ImportError:
+        return None
 
-    Some multimodal processors expose a chat template while the paired tokenizer
-    does not. Agent-loop initialization uses the tokenizer path for system-prompt
-    detection, so we mirror the template to whichever side is missing.
-    """
+    cached_file_kwargs = {
+        k: kwargs[k]
+        for k in ("cache_dir", "revision", "token", "proxies", "local_files_only", "trust_remote_code")
+        if k in kwargs
+    }
+    try:
+        resolved = cached_file(
+            name_or_path,
+            "chat_template.json",
+            _raise_exceptions_for_missing_entries=False,
+            _raise_exceptions_for_connection_errors=False,
+            **cached_file_kwargs,
+        )
+    except Exception:
+        return None
 
-    if tokenizer is None and processor is None:
-        return
+    if not resolved:
+        return None
 
-    if custom_chat_template is not None:
-        if tokenizer is not None:
-            tokenizer.chat_template = custom_chat_template
-        if processor is not None:
-            processor.chat_template = custom_chat_template
-        return
-
-    tokenizer_template = getattr(tokenizer, "chat_template", None) if tokenizer is not None else None
-    processor_template = getattr(processor, "chat_template", None) if processor is not None else None
-
-    if tokenizer is not None and not tokenizer_template and processor_template:
-        tokenizer.chat_template = processor_template
-    elif processor is not None and not processor_template and tokenizer_template:
-        processor.chat_template = tokenizer_template
+    try:
+        with open(resolved) as f:
+            return json.load(f).get("chat_template")
+    except (OSError, ValueError):
+        return None
 
 
 def hf_tokenizer(name_or_path, correct_pad_token=True, correct_gemma2=True, **kwargs):
@@ -322,6 +331,10 @@ def hf_tokenizer(name_or_path, correct_pad_token=True, correct_gemma2=True, **kw
         kwargs["eos_token"] = "<end_of_turn>"
         kwargs["eos_token_id"] = 107
     tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
+    if getattr(tokenizer, "chat_template", None) is None:
+        external_template = _load_external_chat_template(name_or_path, **kwargs)
+        if external_template:
+            tokenizer.chat_template = external_template
     if correct_pad_token:
         set_pad_token_id(tokenizer)
     return tokenizer
@@ -416,4 +429,10 @@ def hf_processor(name_or_path, **kwargs):
     # https://github.com/huggingface/transformers/blob/v4.49.0/src/transformers/models/auto/processing_auto.py#L344
     if processor is not None and "Processor" not in processor.__class__.__name__:
         processor = None
+
+    if processor is not None and getattr(processor, "chat_template", None) is None:
+        external_template = _load_external_chat_template(name_or_path, **kwargs)
+        if external_template:
+            processor.chat_template = external_template
+
     return processor

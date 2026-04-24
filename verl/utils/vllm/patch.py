@@ -140,3 +140,37 @@ def patch_vllm_moe_model_weight_loader(model):
         for name, param in mlp.named_parameters():
             if "w13_weight" in name or "w2_weight" in name:
                 param.weight_loader = experts.weight_loader
+
+
+_QWEN3_OMNI_THINKER_MAPPER_PATCHED = False
+
+
+def apply_qwen3_omni_thinker_patches() -> None:
+    # The training-side standalone thinker state_dict emits bare keys
+    # (``audio_tower.*``, ``model.*``, ``lm_head.*``), while vLLM's
+    # ``Qwen3OmniMoeThinkerForConditionalGeneration.hf_to_vllm_mapper`` only
+    # rewrites ``thinker.*`` prefixes. Extend the class-level mapper so bare
+    # keys are rewritten to the vLLM nested names expected by ``AutoWeightsLoader``.
+    global _QWEN3_OMNI_THINKER_MAPPER_PATCHED
+    if _QWEN3_OMNI_THINKER_MAPPER_PATCHED:
+        return
+
+    try:
+        from vllm.model_executor.models.qwen3_omni_moe_thinker import (
+            Qwen3OmniMoeThinkerForConditionalGeneration,
+        )
+    except ImportError:
+        return
+
+    mapper = getattr(Qwen3OmniMoeThinkerForConditionalGeneration, "hf_to_vllm_mapper", None)
+    if mapper is None or not hasattr(mapper, "orig_to_new_prefix"):
+        return
+
+    extra = {
+        "lm_head.": "language_model.lm_head.",
+        "model.": "language_model.model.",
+    }
+    # Existing ``thinker.*`` rules run first (dict iteration order preserved);
+    # for bare keys those rules no-op and the new prefixes apply.
+    mapper.orig_to_new_prefix = {**mapper.orig_to_new_prefix, **extra}
+    _QWEN3_OMNI_THINKER_MAPPER_PATCHED = True

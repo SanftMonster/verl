@@ -758,7 +758,17 @@ class FSDPEngine(BaseEngine):
     def get_per_tensor_param(self, layered_summon=False, base_sync_done=False, **kwargs):
         log_gpu_memory_usage("Before load_fsdp_model_to_gpu", logger=logger)
 
-        load_fsdp_model_to_gpu(self.module)
+        # When FSDP2 is wrapped with CPUOffloadPolicy (engine_config.offload_policy=True),
+        # params are pinned on CPU and FSDP2 itself streams them to GPU during forward.
+        # Manually calling load_fsdp_model_to_gpu breaks that invariant: the next
+        # state_dict() triggers DTensor dispatch + return_and_correct_aliasing, which
+        # in torch>=2.4 strictly checks that local-tensor device matches DTensor metadata
+        # and raises "Attempted to set the storage of a tensor on device cpu to a storage
+        # on different device cuda:0". The per-param .to(device).full_tensor() below
+        # already all-gathers correctly, so only manually load when params were manually
+        # offloaded (mirrors the offload_fsdp_model_to_cpu gate below).
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.module)
 
         log_gpu_memory_usage("After load_fsdp_model_to_gpu", logger=logger)
 

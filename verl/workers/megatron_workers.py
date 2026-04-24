@@ -39,7 +39,7 @@ from verl import DataProto
 from verl.models.mcore import get_mcore_weight_converter
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, make_nd_compute_dataproto_dispatch_fn, register
-from verl.utils import hf_tokenizer, sync_chat_template
+from verl.utils import hf_tokenizer
 from verl.utils.checkpoint.megatron_checkpoint_manager import MegatronCheckpointManager
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import (
@@ -135,11 +135,11 @@ class MegatronWorker(Worker):
             self.tokenizer = tokenizer_or_path
             self.processor = tokenizer_or_path
 
-        sync_chat_template(
-            self.tokenizer,
-            self.processor,
-            custom_chat_template=self.config.model.get("custom_chat_template", None),
-        )
+        if self.config.model.get("custom_chat_template", None) is not None:
+            if self.processor is not None:
+                self.processor.chat_template = self.config.model.custom_chat_template
+            else:
+                self.tokenizer.chat_template = self.config.model.custom_chat_template
 
         # Step 2: get the hf
         hf_config = AutoConfig.from_pretrained(self.local_path, trust_remote_code=trust_remote_code)

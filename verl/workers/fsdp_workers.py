@@ -47,7 +47,7 @@ from verl import DataProto
 from verl.models.transformers.monkey_patch import apply_monkey_patch
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, make_nd_compute_dataproto_dispatch_fn, register
-from verl.utils import hf_processor, hf_tokenizer, sync_chat_template
+from verl.utils import hf_processor, hf_tokenizer
 from verl.utils.activation_offload import enable_activation_offloading
 from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
 from verl.utils.config import omega_conf_to_dataclass
@@ -381,11 +381,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # TODO(zhangchi.usc1992): 1. support create from random initialized model. 2. Support init with FSDP directly
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
         self.processor = hf_processor(local_path, trust_remote_code=trust_remote_code)
-        sync_chat_template(
-            self.tokenizer,
-            self.processor,
-            custom_chat_template=self.config.model.get("custom_chat_template", None),
-        )
+
+        if self.config.model.get("custom_chat_template", None) is not None:
+            if self.processor is not None:
+                self.processor.chat_template = self.config.model.custom_chat_template
+            else:
+                self.tokenizer.chat_template = self.config.model.custom_chat_template
 
         torch_dtype = fsdp_config.get("model_dtype", None)
         if torch_dtype is None:
@@ -1406,11 +1407,12 @@ class CriticWorker(Worker, DistProfilerExtension):
         tokenizer_path = copy_to_local(config.model.tokenizer_path, use_shm=use_shm)
         self.tokenizer = hf_tokenizer(tokenizer_path, trust_remote_code=config.model.get("trust_remote_code", False))
         self.processor = hf_processor(tokenizer_path, trust_remote_code=config.model.get("trust_remote_code", False))
-        sync_chat_template(
-            self.tokenizer,
-            self.processor,
-            custom_chat_template=self.config.model.get("custom_chat_template", None),
-        )
+
+        if self.config.model.get("custom_chat_template", None) is not None:
+            if self.processor is not None:
+                self.processor.chat_template = self.config.model.custom_chat_template
+            else:
+                self.tokenizer.chat_template = self.config.model.custom_chat_template
         override_config = OmegaConf.to_container(OmegaConf.create(self.config.model.get("override_config", {})))
         override_config_kwargs = {
             "bos_token_id": self.tokenizer.bos_token_id,

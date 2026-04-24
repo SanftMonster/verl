@@ -21,7 +21,6 @@ from .tokenizer import (
     hf_processor,
     hf_tokenizer,
     normalize_token_ids,
-    sync_chat_template,
 )
 
 __all__ = (
@@ -33,7 +32,6 @@ __all__ = (
         "hf_processor",
         "hf_tokenizer",
         "normalize_token_ids",
-        "sync_chat_template",
         "omega_conf_to_dataclass",
         "validate_config",
     ]
