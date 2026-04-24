@@ -460,11 +460,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     case _:
                         actor_module_class = AutoModel
             else:
-                if getattr(actor_model_config, "model_type", None) == "qwen3_omni_moe":
-                    from transformers.models.qwen3_omni_moe import Qwen3OmniMoeThinkerForConditionalGeneration
-
-                    actor_module_class = Qwen3OmniMoeThinkerForConditionalGeneration
-                elif type(actor_model_config) in AutoModelForVision2Seq._model_mapping.keys():
+                if type(actor_model_config) in AutoModelForVision2Seq._model_mapping.keys():
                     actor_module_class = AutoModelForVision2Seq
                 elif type(actor_model_config) in AutoModelForCausalLM._model_mapping.keys():
                     actor_module_class = AutoModelForCausalLM
@@ -473,14 +469,10 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 else:
                     actor_module_class = AutoModel
 
-            actor_pretrained_config = actor_model_config
-            if getattr(actor_model_config, "model_type", None) == "qwen3_omni_moe":
-                actor_pretrained_config = actor_model_config.thinker_config
-
             actor_module = actor_module_class.from_pretrained(
                 pretrained_model_name_or_path=local_path,
                 torch_dtype=torch_dtype,
-                config=actor_pretrained_config,
+                config=actor_model_config,
                 trust_remote_code=trust_remote_code,
                 attn_implementation=attn_implementation,
             )

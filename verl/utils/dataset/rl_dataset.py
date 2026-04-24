@@ -431,6 +431,44 @@ class RLHFDataset(Dataset):
         return audios or None
 
     @classmethod
+    def _extract_image_info(cls, messages: list[dict]) -> list[Image.Image] | None:
+        """Load image payloads from messages as raw PIL images, skipping any
+        pre-resize.
+
+        Mirrors ``_build_messages``' image cases — dict with ``image`` pointing
+        at a filesystem path / PIL object / bytes — but returns the PIL object
+        straight through without calling ``qwen_omni_utils.fetch_image`` or
+        ``qwen_vl_utils.fetch_image``. Those helpers compute
+        ``smart_resize(...)`` and call ``PIL.Image.resize(...)`` *before* the
+        HF processor runs its own ``smart_resize + image.resize``; the double
+        pass silently perturbs ``pixel_values`` (std drift ~3e-3) and is the
+        principal driver of image+audio ``rollout_probs_diff_mean``. See
+        ``scripts/DIAGNOSIS_ROUND7_IMAGE_AUDIO_ROLLOUT_PROBS_DIFF.md``.
+        """
+        images: list[Image.Image] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "image":
+                    continue
+                payload = item.get("image")
+                if payload is None:
+                    payload = item.get("image_url") or item.get("path")
+                if isinstance(payload, Image.Image):
+                    images.append(payload.convert("RGB"))
+                elif isinstance(payload, str):
+                    images.append(Image.open(payload).convert("RGB"))
+                elif isinstance(payload, (bytes | bytearray)):
+                    images.append(Image.open(BytesIO(payload)).convert("RGB"))
+                elif isinstance(payload, dict) and "bytes" in payload:
+                    images.append(Image.open(BytesIO(payload["bytes"])).convert("RGB"))
+                else:
+                    return None  # unknown shape → let the legacy helper handle it
+        return images or None
+
+    @classmethod
     def _process_multi_modal_info(
         cls,
         messages: list[dict],
@@ -453,6 +491,20 @@ class RLHFDataset(Dataset):
                 from qwen_omni_utils import process_mm_info
 
                 audios, images, videos = process_mm_info(messages, use_audio_in_video=use_audio_in_video)
+                has_video = any(
+                    isinstance(m.get("content"), list)
+                    and any(isinstance(it, dict) and it.get("type") == "video" for it in m["content"])
+                    for m in messages
+                )
+                # ``qwen_omni_utils.fetch_image`` pre-resizes the image before
+                # the processor; the processor then resizes again. Skip the
+                # pre-resized images in favour of raw PIL objects when we have
+                # no video (video still needs fetch_video's frame-extraction).
+                # See ``scripts/DIAGNOSIS_ROUND7_IMAGE_AUDIO_ROLLOUT_PROBS_DIFF.md``.
+                if not has_video and not use_audio_in_video:
+                    raw_images = cls._extract_image_info(messages)
+                    if raw_images is not None:
+                        images = raw_images
                 return images, videos, audios
             except Exception as e:
                 logger.warning("Failed to process audio inputs with qwen_omni_utils, fallback to generic path: %s", e)

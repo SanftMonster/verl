@@ -350,8 +350,26 @@ def hf_processor(name_or_path, **kwargs):
 
         config = AutoConfig.from_pretrained(name_or_path, **kwargs)
 
-        # Bind vlm model's get_rope_index method to processor
-        processor.config = config
+        # Bind vlm model's get_rope_index method to processor.
+        #
+        # For Qwen3-Omni, the bound ``get_rope_index`` is
+        # ``Qwen3OmniMoeThinkerForConditionalGeneration.get_rope_index`` and it
+        # reads ``self.config.vision_start_token_id`` / ``image_token_id`` /
+        # ``audio_start_token_id`` / ``position_id_per_seconds``. These attrs
+        # live on ``thinker_config``; the outer ``Qwen3OmniMoeConfig`` has
+        # ``im_start_token_id=151644`` which shadows ``vision_start_token_id``
+        # (151652) when used here. Binding the outer config makes the image
+        # branch of ``get_rope_index`` silently drop to the 1D-cumsum
+        # fallback: ``vision_start_indices`` points at ``<|im_start|>`` tokens
+        # instead of ``<|vision_start|>``, so ``image_nums`` evaluates to 0
+        # and 3D MRope for the image block is never applied. This leaves the
+        # actor forward disagreeing with the vLLM rollout (which uses the
+        # thinker config) and inflates ``rollout_probs_diff`` on image+audio
+        # samples by ~10x.
+        if processor.__class__.__name__ == "Qwen3OmniMoeProcessor":
+            processor.config = getattr(config, "thinker_config", config)
+        else:
+            processor.config = config
         model_class = None
         match processor.__class__.__name__:
             case "Qwen2VLProcessor":
@@ -381,8 +399,13 @@ def hf_processor(name_or_path, **kwargs):
 
         if model_class is not None:
             processor.get_rope_index = types.MethodType(model_class.get_rope_index, processor)
-            if hasattr(model_class, "get_vision_position_ids"):
-                processor.get_vision_position_ids = types.MethodType(model_class.get_vision_position_ids, processor)
+            # Qwen3-Omni's get_rope_index internally calls
+            # self.get_llm_pos_ids_for_vision when images/videos are present;
+            # bind it so mixed audio+vision batches don't AttributeError.
+            for helper_name in ("get_vision_position_ids", "get_llm_pos_ids_for_vision"):
+                helper = getattr(model_class, helper_name, None)
+                if helper is not None:
+                    setattr(processor, helper_name, types.MethodType(helper, processor))
             ensure_qwen3_omni_processor_attrs(processor)
     except Exception as e:
         processor = None

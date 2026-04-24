@@ -877,11 +877,14 @@ class AgentLoopWorker:
         mm_processor_kwargs = mm_processor_kwargs or {}
         if is_qwen3_omni_processor(self.processor):
             ensure_qwen3_omni_processor_attrs(self.processor)
+            from verl.models.transformers.qwen3_omni_moe import get_rope_index as qwen3_omni_get_rope_index
+
             audio_seqlens = None
             feature_attention_mask = multi_modal_inputs.get("feature_attention_mask")
             if feature_attention_mask is not None:
                 audio_seqlens = feature_attention_mask.sum(dim=-1)
-            position_ids, _ = self.processor.get_rope_index(
+            position_ids, _ = qwen3_omni_get_rope_index(
+                self.processor,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 image_grid_thw=multi_modal_inputs.get("image_grid_thw"),

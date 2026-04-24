@@ -319,6 +319,8 @@ class AsyncRolloutRequest(BaseModel):
             )
             return new_position_ids  # (3, seq_len)
         elif is_qwen3_omni_processor(processing_class):
+            from verl.models.transformers.qwen3_omni_moe import get_rope_index as qwen3_omni_get_rope_index
+
             image_grid_thw = video_grid_thw = video_second_per_grid = feature_attention_mask = None
             if multi_modal_inputs:
                 image_grid_thw = multi_modal_inputs.get("image_grid_thw")
@@ -330,7 +332,8 @@ class AsyncRolloutRequest(BaseModel):
             if feature_attention_mask is not None:
                 audio_seqlens = feature_attention_mask.sum(dim=-1)
 
-            new_position_ids, _ = processing_class.get_rope_index(
+            new_position_ids, _ = qwen3_omni_get_rope_index(
+                processing_class,
                 input_ids=input_ids,
                 image_grid_thw=image_grid_thw,
                 video_grid_thw=video_grid_thw,

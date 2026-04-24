@@ -224,8 +224,18 @@ class FSDPEngine(BaseEngine):
 
         torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
+        # For composite configs like Qwen3-Omni (`model_type="qwen3_omni_moe"`), the
+        # outer config is only a container of sub-configs and does not expose common
+        # fields such as `tie_word_embeddings` (transformers>=5.3). Resolve the
+        # effective text/decoder config up-front so it is used both for meta-init
+        # gating and for `from_pretrained(config=...)`.
+        hf_effective_config = self.model_config.hf_config
+        if getattr(self.model_config.hf_config, "model_type", None) == "qwen3_omni_moe":
+            hf_effective_config = self.model_config.hf_config.thinker_config
+
         init_context = get_init_weight_context_manager(
-            use_meta_tensor=not self.model_config.hf_config.tie_word_embeddings, mesh=self.device_mesh
+            use_meta_tensor=not getattr(hf_effective_config, "tie_word_embeddings", False),
+            mesh=self.device_mesh,
         )
 
         with init_context(), warnings.catch_warnings():
@@ -233,14 +243,11 @@ class FSDPEngine(BaseEngine):
 
             if self.model_config.model_type == "language_model":
                 auto_class = get_hf_auto_model_class(hf_config=self.model_config.hf_config)
-                hf_pretrained_config = self.model_config.hf_config
-                if getattr(self.model_config.hf_config, "model_type", None) == "qwen3_omni_moe":
-                    hf_pretrained_config = self.model_config.hf_config.thinker_config
 
                 module = auto_class.from_pretrained(
                     pretrained_model_name_or_path=self.model_config.local_path,
                     torch_dtype=torch_dtype,
-                    config=hf_pretrained_config,
+                    config=hf_effective_config,
                     trust_remote_code=self.model_config.trust_remote_code,
                 )
             else:
