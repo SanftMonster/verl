@@ -342,6 +342,10 @@ class AsyncRolloutRequest(BaseModel):
                 audio_seqlens=audio_seqlens,
                 second_per_grids=video_second_per_grid,
             )
+            # vLLM's Qwen3-Omni MRope consumes ``(3, seq_len)`` directly — do
+            # NOT prepend a text axis here. The training-side counterpart
+            # (``AgentLoopWorker._compute_position_ids``) adds the text axis so
+            # HF's ``Qwen3OmniMoeThinkerTextModel`` sees ``(4, bs, seq)``.
             return (
                 new_position_ids.squeeze(1)
                 if new_position_ids.dim() == 3 and new_position_ids.shape[1] == 1
