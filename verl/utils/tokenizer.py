@@ -113,8 +113,11 @@ def ensure_qwen3_omni_processor_attrs(processor):
     thinker_config = getattr(config, "thinker_config", None)
     talker_config = getattr(config, "talker_config", None)
     vision_config = getattr(thinker_config, "vision_config", None) or getattr(config, "vision_config", None)
+    # Fallbacks when processor/config does not expose *_token_id directly.
+    # Values verified against Qwen/Qwen3-Omni-30B-A3B-Instruct tokenizer_config.json
+    # (added_tokens_decoder). `audio_token_id` = <|audio_pad|> = 151675 (NOT 151646).
     default_token_ids = {
-        "audio_token_id": 151646,
+        "audio_token_id": 151675,
         "image_token_id": 151655,
         "video_token_id": 151656,
         "vision_start_token_id": 151652,
